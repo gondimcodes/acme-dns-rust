@@ -1,0 +1,15 @@
+[Unit]
+Description=acme-dns-rust Server
+After=network.target
+
+[Service]
+Type=simple
+User=acme-dns
+Group=acme-dns
+WorkingDirectory=/var/lib/acme-dns-rust
+ExecStart=/usr/local/bin/acme-dns-rust --config /etc/acme-dns-rust/config.toml
+Restart=on-failure
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target
