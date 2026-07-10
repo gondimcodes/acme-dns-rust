@@ -1,0 +1,31 @@
+# Changelog — acme-dns-rust
+
+## [1.1.0] — 2026-07-10
+
+This release introduces a complete technical audit and revision focusing on security, performance, architecture, and overall service stability.
+
+### 🔒 Security Fixes
+- **SEG-01 / SEG-02 — Rate Limiter & IP Spoofing**: The API rate limiter now correctly extracts the real client IP via proxy headers (like `X-Forwarded-For`), applying strict validation against the configured list of CIDRs for trusted proxies (`trusted_proxies` in `config.toml`) to prevent bypasses.
+- **SEG-03 — Whitelist Fail-Closed**: Fixed a critical vulnerability where the IP access whitelist was bypassed if the client IP could not be determined. The logic is now *fail-closed* (access denied by default).
+- **SEG-04 — Challenge TXT Validation**: Implemented strict validation of the `txt` value in the `/update` endpoint. Values that are not valid ACME DNS-01 tokens (Base64URL of exactly 43 characters) are immediately rejected with a `400 Bad Request`.
+- **SEG-05 — API Payload Limitation**: Reduced the request body limit for API endpoints from 16 KB to 1 KB, mitigating potential DoS attacks from resource or bandwidth exhaustion.
+- **SEG-06 — Elimination of Panics (`unwrap`)**: All silent panics (`unwrap` and `expect`) during service initialization and DNS/HTTP request handling have been removed or replaced with robust structured error propagation.
+- **SEG-07 — Timing Equalization**: Introduced artificial delay during credentials verification (`dummy_verify`) for non-existent users, preventing timing attacks that allowed username enumeration.
+- **SEG-08 — Admin Password Strength Policy**: Increased the minimum admin password length from 6 to 12 characters.
+- **SEG-09 — Rate Limiter Memory Leak**: Added periodic cleanup (`limits.retain`) of stale IP entries in the rate limiter, preventing memory leaks under high volumes of scanner or crawler traffic.
+- **SEG-11 / SEG-12 — CORS & HSTS Integration**: Fixed inactive code blocks. CORS configuration directives and HTTP Strict Transport Security (HSTS) headers are now actively applied and sent.
+- **QUAL-08 — Deserialization Error Handling**: Failures to decode access control parameters (`AllowFrom` corruption in the database) now log `WARN` alerts instead of silently returning empty lists, avoiding hidden security bypasses.
+
+### ⚡ Performance
+- **PERF-01 — Lock-Free Rate Limiter**: Replaced the global `Mutex<HashMap>` with a concurrent `DashMap` for the rate limiter, removing throughput bottlenecks and global locking overhead.
+- **PERF-02 — Arc Config Sharing**: The service configuration (`Config`) is now shared via `Arc<Config>` across API worker threads, avoiding deep clone operations on every incoming HTTP connection.
+- **PERF-03 — DNS Server TXT Record Cache**: Added a concurrent in-memory cache with a 2-second TTL (powered by the `moka` crate) for TXT record resolution in the DNS handler, significantly reducing query overhead to the SQLite/Postgres database.
+- **PERF-04 — SOA Serial Parse Optimization**: The SOA serial number (`serial_u32`) is now parsed and cached once during zone initialization, eliminating redundant string parsing inside loops.
+
+### 🏗️ Architecture & Code Quality
+- **QUAL-01 — Unified Database Layer (AnyPool)**: Re-engineered the database interface (`db.rs`) using `sqlx::AnyPool`. Massive code duplication between SQLite and Postgres database statement branches has been entirely eliminated.
+- **QUAL-02 / QUAL-04 — Clap-Based CLI**: Replaced manual command-line argument parsing in `main.rs` with a declarative structure using the `clap` crate, and decoupled CLI logic into a new `cli.rs` module.
+- **ARQ-01 — Automated Test Coverage**: Introduced robust unit testing in `auth.rs` (covering password checks, length limits, and token validations) and integration tests in `tests/config_test.rs`.
+- **ARQ-02 — Graceful Shutdown**: Added proper signal handling for `SIGINT` (Ctrl-C) and `SIGTERM` (systemd stop standard), ensuring database pools are drained and connections are closed cleanly.
+- **ARQ-03 — Versioned SQL Migrations**: Integrated automated migrations using sqlx (`migrations/`), allowing clean database schema setups and backward compatibility with existing legacy tables.
+- **ARQ-05 — Prometheus Metrics**: Integrated native observability metrics using the `metrics` crate, exposing a `/metrics` API endpoint providing counters for endpoint requests and active connections.

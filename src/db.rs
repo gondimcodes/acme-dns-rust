@@ -59,7 +59,7 @@ impl DbPool {
     // ─── Admin ─────────────────────────────────────────────────────────────────
 
     pub async fn get_admin_password_hash(&self) -> Result<Option<String>, sqlx::Error> {
-        let row = sqlx::query("SELECT Password FROM admin WHERE ID = 1")
+        let row = sqlx::query("SELECT Password FROM admin LIMIT 1")
             .fetch_optional(&self.pool)
             .await?;
         Ok(row.and_then(|r| {
@@ -69,7 +69,11 @@ impl DbPool {
     }
 
     pub async fn set_admin_password(&self, hash: &str) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE admin SET Password = ? WHERE ID = 1")
+        // Clear old entries and insert the new single admin row (safe on all DBs without ID key)
+        sqlx::query("DELETE FROM admin")
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("INSERT INTO admin (Password) VALUES (?)")
             .bind(hash)
             .execute(&self.pool)
             .await?;

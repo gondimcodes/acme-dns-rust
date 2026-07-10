@@ -1,5 +1,5 @@
--- ARQ-03: Initial schema migration
--- Uses CREATE TABLE IF NOT EXISTS for safe application to existing databases
+-- ARQ-03: Initial schema migration matching the exact legacy schema definition
+-- to ensure compatibility with existing databases.
 
 CREATE TABLE IF NOT EXISTS records (
     Username   TEXT NOT NULL PRIMARY KEY,
@@ -15,9 +15,5 @@ CREATE TABLE IF NOT EXISTS txt (
 );
 
 CREATE TABLE IF NOT EXISTS admin (
-    ID       INTEGER NOT NULL PRIMARY KEY,
     Password TEXT NOT NULL DEFAULT ''
 );
-
--- Seed admin row if not present
-INSERT OR IGNORE INTO admin (ID, Password) VALUES (1, '');
