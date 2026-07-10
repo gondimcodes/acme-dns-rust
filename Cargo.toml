@@ -23,9 +23,10 @@ chrono = { version = "0.4", features = ["serde"] }
 async-trait = "0.1"
 hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
 tower = { version = "0.5", features = ["util"] }
-axum-server = { version = "=0.7.3", features = ["tls-rustls"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+axum-server = { version = "=0.7.3", default-features = false, features = ["tls-rustls"] }
 rustls-pemfile = "2.1"
 rcgen = "0.13"
-rustls-acme = { version = "0.11", features = ["tokio"] }
+rustls-acme = { version = "0.11", default-features = false, features = ["tokio", "ring"] }
 tokio-stream = { version = "0.1", features = ["net"] }
 rpassword = "7.3"
