@@ -64,8 +64,8 @@ sudo useradd -r -s /bin/false acme-dns
 ### Config Directories
 Create directories for configuration and runtime state database:
 ```bash
-sudo mkdir /etc/acme-dns-rust
-sudo mkdir /var/lib/acme-dns-rust
+sudo mkdir -p /etc/acme-dns-rust
+sudo mkdir -p /var/lib/acme-dns-rust
 ```
 
 Copy the template configuration file:

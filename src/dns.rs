@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 use hickory_server::{
     authority::{Authority, MessageRequest, ZoneType},
     proto::rr::{Name, RecordType, Record as DnsRecord, LowerName},
@@ -10,6 +11,7 @@ use std::str::FromStr;
 use std::collections::BTreeMap;
 use crate::db::DbPool;
 use crate::config::Config;
+use moka::future::Cache;
 
 use async_trait::async_trait;
 
@@ -18,31 +20,38 @@ pub struct AcmeDnsHandler {
     pub db: Arc<DbPool>,
     pub own_domain: Name,
     pub static_authority: Arc<InMemoryAuthority>,
-    pub personal_auth_key: Arc<tokio::sync::RwLock<String>>,
+    /// PERF-03: In-memory cache for TXT records with 2-second TTL
+    pub txt_cache: Arc<Cache<String, Vec<String>>>,
 }
 
 impl AcmeDnsHandler {
-    pub fn new(config: &Config, db: Arc<DbPool>) -> Self {
+    pub fn new(config: &Config, db: Arc<DbPool>) -> Result<Self, String> {
         let domain_str = if config.general.domain.ends_with('.') {
             config.general.domain.clone()
         } else {
             format!("{}.", config.general.domain)
         };
-        let own_domain = Name::from_str(&domain_str).unwrap();
+
+        // SEG-06: replace unwrap() with proper error propagation
+        let own_domain = Name::from_str(&domain_str)
+            .map_err(|e| format!("Invalid domain '{}': {}", domain_str, e))?;
 
         // Setup SOA
         let serial = chrono::Utc::now().format("%Y%m%d%H").to_string();
+        // PERF-04: compute serial_u32 once
+        let serial_u32: u32 = serial.parse().unwrap_or(1);
+
         let nsname = config.general.nsname.clone();
         let nsadmin = config.general.nsadmin.clone();
-        
+
         let mut records = BTreeMap::new();
-        
+
         // Parse static records (split manually and build)
         for rec in &config.general.static_records {
             let parts: Vec<&str> = rec.split_whitespace().collect();
             if parts.len() >= 3 {
                 let name_str = if parts[0].ends_with('.') { parts[0].to_string() } else { format!("{}.", parts[0]) };
-                
+
                 // Support both Standard Zonefile format (name class type data) and simplified (name type data)
                 let (rtype_str, rdata_str) = if parts.len() >= 4 && (parts[1].to_uppercase() == "IN" || parts[2].to_uppercase() == "IN") {
                     let type_idx = if parts[1].to_uppercase() == "IN" { 2 } else { 1 };
@@ -51,14 +60,13 @@ impl AcmeDnsHandler {
                 } else {
                     (parts[1], parts[2..].join(" "))
                 };
-                
+
                 if let (Ok(name), Ok(rtype)) = (Name::from_str(&name_str), RecordType::from_str(&rtype_str.to_uppercase())) {
                     let mut dns_rec = DnsRecord::new();
                     dns_rec.set_name(name.clone());
                     dns_rec.set_rr_type(rtype);
                     dns_rec.set_ttl(3600);
 
-                    // Basic static mapping (A, NS, CNAME)
                     let rdata = match rtype {
                         RecordType::A => {
                             if let Ok(ip) = rdata_str.parse::<std::net::Ipv4Addr>() {
@@ -97,23 +105,28 @@ impl AcmeDnsHandler {
                         dns_rec.set_data(Some(data));
                         let rrkey = hickory_server::proto::rr::RrKey::new(name.clone().into(), rtype);
                         let record_set = records.entry(rrkey).or_insert_with(|| {
-                            hickory_server::proto::rr::RecordSet::new(&name, rtype, serial.parse::<u32>().unwrap_or(1))
+                            hickory_server::proto::rr::RecordSet::new(&name, rtype, serial_u32)
                         });
-                        record_set.insert(dns_rec, serial.parse::<u32>().unwrap_or(1));
+                        record_set.insert(dns_rec, serial_u32);
                     }
                 }
             }
         }
 
-        // Parse SOA
+        // Parse SOA — SEG-06: replace unwrap() with map_err
         let soa_name = own_domain.clone();
-        let mname = if nsname.ends_with('.') { Name::from_str(&nsname).unwrap() } else { Name::from_str(&format!("{}.", nsname)).unwrap() };
-        let rname = if nsadmin.ends_with('.') { Name::from_str(&nsadmin).unwrap() } else { Name::from_str(&format!("{}.", nsadmin)).unwrap() };
-        
+        let mname_str = if nsname.ends_with('.') { nsname.clone() } else { format!("{}.", nsname) };
+        let rname_str = if nsadmin.ends_with('.') { nsadmin.clone() } else { format!("{}.", nsadmin) };
+
+        let mname = Name::from_str(&mname_str)
+            .map_err(|e| format!("Invalid nsname '{}': {}", mname_str, e))?;
+        let rname = Name::from_str(&rname_str)
+            .map_err(|e| format!("Invalid nsadmin '{}': {}", rname_str, e))?;
+
         let soa_data = hickory_server::proto::rr::rdata::SOA::new(
             mname,
             rname,
-            serial.parse::<u32>().unwrap_or(1),
+            serial_u32,
             28800,
             7200,
             604800,
@@ -128,19 +141,26 @@ impl AcmeDnsHandler {
 
         let rrkey = hickory_server::proto::rr::RrKey::new(soa_name.clone().into(), RecordType::SOA);
         let record_set = records.entry(rrkey).or_insert_with(|| {
-            hickory_server::proto::rr::RecordSet::new(&soa_name, RecordType::SOA, serial.parse::<u32>().unwrap_or(1))
+            hickory_server::proto::rr::RecordSet::new(&soa_name, RecordType::SOA, serial_u32)
         });
-        record_set.insert(soa_rec, serial.parse::<u32>().unwrap_or(1));
+        record_set.insert(soa_rec, serial_u32);
 
+        // SEG-06: replace .expect() with map_err
         let static_authority = InMemoryAuthority::new(own_domain.clone(), records, ZoneType::Primary, false)
-            .expect("Failed to initialize static zone records");
+            .map_err(|e| format!("Failed to initialize static zone records: {}", e))?;
 
-        Self {
+        // PERF-03: TXT record cache — 2 second TTL, max 10000 entries
+        let txt_cache = Cache::builder()
+            .max_capacity(10_000)
+            .time_to_live(Duration::from_secs(2))
+            .build();
+
+        Ok(Self {
             db,
             own_domain,
             static_authority: Arc::new(static_authority),
-            personal_auth_key: Arc::new(tokio::sync::RwLock::new(String::new())),
-        }
+            txt_cache: Arc::new(txt_cache),
+        })
     }
 
     fn sanitize_domain_question(&self, name: &Name) -> String {
@@ -156,6 +176,16 @@ impl AcmeDnsHandler {
         } else {
             name_str
         }
+    }
+
+    /// PERF-03: Cached TXT lookup — checks in-memory cache first, falls back to DB
+    async fn get_txt_cached(&self, subdomain: &str) -> Vec<String> {
+        if let Some(cached) = self.txt_cache.get(subdomain).await {
+            return cached;
+        }
+        let values = self.db.get_txt_for_domain(subdomain).await.unwrap_or_default();
+        self.txt_cache.insert(subdomain.to_string(), values.clone()).await;
+        values
     }
 }
 
@@ -174,10 +204,9 @@ impl RequestHandler for AcmeDnsHandler {
         let domain_str = self.own_domain.to_string();
 
         // Enforce strict domain name validation to prevent scanner DoS
-        // Allow queries ending in own_domain (e.g. auth.ispfocus.net.br) or the parent domain base (e.g. ispfocus.net.br)
         let name_normalized = name_str.trim_end_matches('.').to_lowercase();
         let domain_normalized = domain_str.trim_end_matches('.').to_lowercase();
-        
+
         let base_domain = if domain_normalized.starts_with("auth.") {
             domain_normalized[5..].to_string()
         } else {
@@ -202,62 +231,32 @@ impl RequestHandler for AcmeDnsHandler {
 
         // Determine if query is for dynamically handled TXT records
         if qtype == RecordType::TXT {
-            let name_str = name.to_string();
-            // Check if it's the server's own ACME DNS-01 challenge
-            if name_str.starts_with("_acme-challenge.") && name_str[16..] == self.own_domain.to_string() {
-                let key = self.personal_auth_key.read().await;
-                if !key.is_empty() {
-                    let mut txt_rec = DnsRecord::new();
-                    txt_rec.set_name(Name::from(name.clone()));
-                    txt_rec.set_rr_type(RecordType::TXT);
-                    txt_rec.set_ttl(1);
-                    txt_rec.set_data(Some(hickory_server::proto::rr::RData::TXT(
-                        hickory_server::proto::rr::rdata::TXT::new(vec![key.clone()])
-                    )));
-
-                    let mut header = hickory_server::proto::op::Header::response_from_request(request.header());
-                    header.set_response_code(hickory_server::proto::op::ResponseCode::NoError);
-                    header.set_authoritative(true);
-
-                    let answers = [txt_rec];
-                    let response = MessageResponseBuilder::from_message_request(request)
-                        .build(header, &answers, &[], &[], &[]);
-                    
-                    if let Ok(info) = response_handle.send_response(response).await {
-                        return info;
-                    } else {
-                        let mut err_hdr = hickory_server::proto::op::Header::new();
-                        err_hdr.set_response_code(hickory_server::proto::op::ResponseCode::ServFail);
-                        return ResponseInfo::from(err_hdr);
+            let subdomain = self.sanitize_domain_question(&Name::from(name.clone()));
+            // PERF-03: use cached lookup
+            let values = self.get_txt_cached(&subdomain).await;
+            if !values.is_empty() {
+                let mut answers = Vec::new();
+                for val in values {
+                    if !val.is_empty() {
+                        let mut txt_rec = DnsRecord::new();
+                        txt_rec.set_name(Name::from(name.clone()));
+                        txt_rec.set_rr_type(RecordType::TXT);
+                        txt_rec.set_ttl(1);
+                        txt_rec.set_data(Some(hickory_server::proto::rr::RData::TXT(
+                            hickory_server::proto::rr::rdata::TXT::new(vec![val])
+                        )));
+                        answers.push(txt_rec);
                     }
                 }
-            }
 
-            let subdomain = self.sanitize_domain_question(&Name::from(name.clone()));
-
-            if let Ok(values) = self.db.get_txt_for_domain(&subdomain).await {
-                if !values.is_empty() {
-                    let mut answers = Vec::new();
-                    for val in values {
-                        if !val.is_empty() {
-                            let mut txt_rec = DnsRecord::new();
-                            txt_rec.set_name(Name::from(name.clone()));
-                            txt_rec.set_rr_type(RecordType::TXT);
-                            txt_rec.set_ttl(1);
-                            txt_rec.set_data(Some(hickory_server::proto::rr::RData::TXT(
-                                hickory_server::proto::rr::rdata::TXT::new(vec![val])
-                            )));
-                            answers.push(txt_rec);
-                        }
-                    }
-                    
+                if !answers.is_empty() {
                     let mut header = hickory_server::proto::op::Header::response_from_request(request.header());
                     header.set_response_code(hickory_server::proto::op::ResponseCode::NoError);
                     header.set_authoritative(true);
 
                     let response = MessageResponseBuilder::from_message_request(request)
                         .build(header, &answers, &[], &[], &[]);
-                    
+
                     if let Ok(info) = response_handle.send_response(response).await {
                         return info;
                     } else {
@@ -269,10 +268,10 @@ impl RequestHandler for AcmeDnsHandler {
             }
         }
 
-        // Fallback to static records managed by InMemoryAuthority (delegate to search/lookup traits)
+        // Fallback to static records managed by InMemoryAuthority
         let options = hickory_server::authority::LookupOptions::default();
         let lookup_result = self.static_authority.search(request.request_info(), options).await;
-        
+
         let mut header = hickory_server::proto::op::Header::response_from_request(request.header());
         header.set_authoritative(true);
 
@@ -329,60 +328,34 @@ impl Authority for AcmeDnsHandler {
         rtype: RecordType,
         lookup_options: hickory_server::authority::LookupOptions,
     ) -> Result<Self::Lookup, hickory_server::authority::LookupError> {
-        let name_str = name.to_string();
         // Intercept dynamic TXT queries
         if rtype == RecordType::TXT {
             let subdomain = self.sanitize_domain_question(&Name::from(name.clone()));
-            
-            // Check if it's the server's own ACME DNS-01 challenge
-            if name_str.starts_with("_acme-challenge.") && name_str[16..].trim_end_matches('.') == self.own_domain.to_string().trim_end_matches('.') {
-                let key = self.personal_auth_key.read().await;
-                if !key.is_empty() {
-                    let mut record_set = hickory_server::proto::rr::RecordSet::new(&Name::from(name.clone()), RecordType::TXT, 1);
-                    let mut txt_rec = DnsRecord::new();
-                    txt_rec.set_name(Name::from(name.clone()));
-                    txt_rec.set_rr_type(RecordType::TXT);
-                    txt_rec.set_ttl(1);
-                    txt_rec.set_data(Some(hickory_server::proto::rr::RData::TXT(
-                        hickory_server::proto::rr::rdata::TXT::new(vec![key.clone()])
-                    )));
-                    record_set.insert(txt_rec, 1);
-                    
-                    let lookup = hickory_server::authority::AuthLookup::answers(
-                        hickory_server::authority::LookupRecords::new(
-                            lookup_options,
-                            std::sync::Arc::new(record_set)
-                        ),
-                        None
-                    );
-                    return Ok(lookup);
-                }
-            }
 
-            if let Ok(values) = self.db.get_txt_for_domain(&subdomain).await {
-                if !values.is_empty() {
-                    let mut record_set = hickory_server::proto::rr::RecordSet::new(&Name::from(name.clone()), RecordType::TXT, 1);
-                    for val in values {
-                        if !val.is_empty() {
-                            let mut txt_rec = DnsRecord::new();
-                            txt_rec.set_name(Name::from(name.clone()));
-                            txt_rec.set_rr_type(RecordType::TXT);
-                            txt_rec.set_ttl(1);
-                            txt_rec.set_data(Some(hickory_server::proto::rr::RData::TXT(
-                                hickory_server::proto::rr::rdata::TXT::new(vec![val])
-                            )));
-                            record_set.insert(txt_rec, 1);
-                        }
+            // PERF-03: use cached lookup
+            let values = self.get_txt_cached(&subdomain).await;
+            if !values.is_empty() {
+                let mut record_set = hickory_server::proto::rr::RecordSet::new(&Name::from(name.clone()), RecordType::TXT, 1);
+                for val in values {
+                    if !val.is_empty() {
+                        let mut txt_rec = DnsRecord::new();
+                        txt_rec.set_name(Name::from(name.clone()));
+                        txt_rec.set_rr_type(RecordType::TXT);
+                        txt_rec.set_ttl(1);
+                        txt_rec.set_data(Some(hickory_server::proto::rr::RData::TXT(
+                            hickory_server::proto::rr::rdata::TXT::new(vec![val])
+                        )));
+                        record_set.insert(txt_rec, 1);
                     }
-                    let lookup = hickory_server::authority::AuthLookup::answers(
-                        hickory_server::authority::LookupRecords::new(
-                            lookup_options,
-                            std::sync::Arc::new(record_set)
-                        ),
-                        None
-                    );
-                    return Ok(lookup);
                 }
+                let lookup = hickory_server::authority::AuthLookup::answers(
+                    hickory_server::authority::LookupRecords::new(
+                        lookup_options,
+                        std::sync::Arc::new(record_set)
+                    ),
+                    None
+                );
+                return Ok(lookup);
             }
         }
 

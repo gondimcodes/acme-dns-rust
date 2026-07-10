@@ -1,0 +1,30 @@
+[general]
+listen = "127.0.0.1:53"
+protocol = "both"
+domain = "auth.test.local"
+nsname = "ns1.auth.test.local"
+nsadmin = "admin.test.local"
+records = []
+debug = false
+
+[database]
+engine = "sqlite"
+connection = ":memory:"
+
+[api]
+ip = "127.0.0.1"
+disable_registration = false
+port = "8080"
+tls = "none"
+corsorigins = ["*"]
+use_header = false
+header_name = "X-Forwarded-For"
+hsts_enabled = false
+hsts_max_age = 31536000
+hsts_include_subdomains = false
+hsts_preload = false
+trusted_proxies = []
+register_rate_limit_per_min = 0
+
+[logconfig]
+loglevel = "error"

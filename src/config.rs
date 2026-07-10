@@ -50,14 +50,15 @@ pub struct Api {
     pub hsts_max_age: Option<u32>,
     pub hsts_include_subdomains: bool,
     pub hsts_preload: bool,
+    #[serde(default)]
+    pub trusted_proxies: Vec<String>,
+    #[serde(default)]
+    pub register_rate_limit_per_min: u32,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LogConfig {
     pub loglevel: String,
-    pub logtype: String,
-    pub logfile: String,
-    pub logformat: String,
 }
 
 impl Config {

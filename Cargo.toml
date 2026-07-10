@@ -3,13 +3,22 @@ name = "acme-dns-rust"
 version = "1.0.1"
 edition = "2024"
 
+[[bin]]
+name = "acme-dns-rust"
+path = "src/main.rs"
+
+[lib]
+name = "acme_dns_rust"
+path = "src/lib.rs"
+
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 axum = { version = "0.7", features = ["macros"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 toml = "0.8"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "postgres", "uuid", "macros"] }
+clap = { version = "4", features = ["derive"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "postgres", "uuid", "macros", "any", "migrate"] }
 bcrypt = "0.15"
 uuid = { version = "1.0", features = ["v4", "serde"] }
 hickory-server = "0.24" # Formerly trust-dns-server
@@ -17,8 +26,10 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 regex = "1"
 ipnetwork = "0.20"
-cors = { package = "tower-http", version = "0.5", features = ["cors"] }
+tower-http = { version = "0.5", features = ["cors", "set-header"] }
 rand = "0.8"
+dashmap = "6"
+moka = { version = "0.12", features = ["future"] }
 chrono = { version = "0.4", features = ["serde"] }
 async-trait = "0.1"
 hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
@@ -33,3 +44,5 @@ rcgen = "0.13"
 rustls-acme = { version = "0.11", default-features = false, features = ["tokio", "ring"] }
 tokio-stream = { version = "0.1", features = ["net"] }
 rpassword = "7.3"
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.16", default-features = false }

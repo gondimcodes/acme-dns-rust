@@ -64,13 +64,12 @@ hsts_max_age = 31536000
 hsts_include_subdomains = false
 # HSTS preload directive
 hsts_preload = false
+# List of trusted reverse proxy IPs/CIDRs (used when use_header = true to prevent IP spoofing)
+# Example: ["127.0.0.1/32", "10.0.0.0/8"]
+trusted_proxies = []
+# Max registration requests per minute per IP (0 = use global rate limiter only)
+register_rate_limit_per_min = 1
 
 [logconfig]
 # logging level: "error", "warning", "info" or "debug"
 loglevel = "info"
-# possible values: stdout, file
-logtype = "stdout"
-# file path for logfile
-logfile = "./acme-dns.log"
-# format, either "json" or "text"
-logformat = "json"
