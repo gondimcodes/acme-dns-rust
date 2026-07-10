@@ -12,9 +12,6 @@ jobs:
     permissions:
       contents: write
 
-    env:
-      AWS_LC_SYS_NO_ASM: 1
-
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -57,9 +54,12 @@ jobs:
           cd acme-dns-client-rust && cargo build --release
 
       - name: Build for FreeBSD (amd64)
+        env:
+          AWS_LC_SYS_NO_ASM: 1
         run: |
           cargo zigbuild --release --target x86_64-unknown-freebsd
           cd acme-dns-client-rust && cargo zigbuild --release --target x86_64-unknown-freebsd
+
 
       - name: Compress and Package Binaries
         run: |
