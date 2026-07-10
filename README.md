@@ -48,7 +48,18 @@ acme-dns-rust/
 
 The `acme-dns-rust` server serves dynamic DNS challenge TXT records for DNS-01 verification and provides an API for registrations.
 
-## 1. CLI Administration Utilities
+## 1. Authoritative DNS Configuration Setup
+To delegate the ACME verification queries to your `acme-dns-rust` server, you must configure the following records in your parent domain's authoritative DNS zone (e.g. `example.org`):
+
+```text
+auth.example.org.         IN NS ns1.auth.example.org.
+ns1.auth.example.org.     IN A 198.51.100.1
+ns1.auth.example.org.     IN AAAA 2001:db8::198:51:100:1
+```
+*(Replace `example.org` with your actual domain, and the IPs with the public IPv4 and IPv6 addresses of your acme-dns server).*
+
+## 2. CLI Administration Utilities
+
 All administrative commands require authentication via the admin password configured during the first run.
 
 ### List Registered Users
