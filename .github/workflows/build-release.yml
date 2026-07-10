@@ -31,6 +31,9 @@ jobs:
       - name: Install cargo-zigbuild
         run: cargo install cargo-zigbuild --locked
 
+      - name: Install cmake (required for aws-lc-sys cross-compilation)
+        run: sudo apt-get install -y cmake
+
       - name: Cache Cargo Dependencies
         uses: actions/cache@v4
         with:
@@ -56,6 +59,9 @@ jobs:
       - name: Build for FreeBSD (amd64)
         env:
           AWS_LC_SYS_NO_ASM: 1
+          CC_x86_64_unknown_freebsd: zig cc -target x86_64-freebsd
+          AR_x86_64_unknown_freebsd: zig ar
+          CARGO_TARGET_X86_64_UNKNOWN_FREEBSD_LINKER: zig cc -target x86_64-freebsd
         run: |
           cargo zigbuild --release --target x86_64-unknown-freebsd
           cd acme-dns-client-rust && cargo zigbuild --release --target x86_64-unknown-freebsd
