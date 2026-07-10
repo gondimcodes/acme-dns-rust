@@ -6,8 +6,8 @@ on:
       - 'v*' # Trigger build on version tags (e.g. v1.0.0)
 
 jobs:
-  build:
-    name: Build Multiplatform Binaries
+  build-linux:
+    name: Build Linux (amd64)
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -18,21 +18,6 @@ jobs:
 
       - name: Install Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: |
-            x86_64-unknown-linux-gnu
-            x86_64-unknown-freebsd
-
-      - name: Install Zig (for cross-compilation linking)
-        uses: goto-bus-stop/setup-zig@v2
-        with:
-          version: 0.11.0
-
-      - name: Install cargo-zigbuild
-        run: cargo install cargo-zigbuild --locked
-
-      - name: Install cmake (required for aws-lc-sys cross-compilation)
-        run: sudo apt-get install -y cmake
 
       - name: Cache Cargo Dependencies
         uses: actions/cache@v4
@@ -44,51 +29,86 @@ jobs:
             ~/.cargo/git/db/
             target/
             acme-dns-client-rust/target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Check and Format Check
-        run: |
-          cargo check
-          cd acme-dns-client-rust && cargo check
+          key: linux-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build for Linux (amd64)
         run: |
           cargo build --release
           cd acme-dns-client-rust && cargo build --release
 
-      - name: Build for FreeBSD (amd64)
-        env:
-          AWS_LC_SYS_NO_ASM: 1
-          CC_x86_64_unknown_freebsd: zig cc -target x86_64-freebsd
-          AR_x86_64_unknown_freebsd: zig ar
-          CARGO_TARGET_X86_64_UNKNOWN_FREEBSD_LINKER: zig cc -target x86_64-freebsd
-        run: |
-          cargo zigbuild --release --target x86_64-unknown-freebsd
-          cd acme-dns-client-rust && cargo zigbuild --release --target x86_64-unknown-freebsd
-
-
-      - name: Compress and Package Binaries
+      - name: Package Linux Binaries
         run: |
           mkdir -p dist
-          
-          # Linux packaging
           cp target/release/acme-dns-rust dist/acme-dns-rust
           cp acme-dns-client-rust/target/release/acme-dns-client-rust dist/acme-dns-client-rust
           cd dist
           tar -czf acme-dns-rust-linux-amd64.tar.gz acme-dns-rust
           tar -czf acme-dns-client-rust-linux-amd64.tar.gz acme-dns-client-rust
-          rm acme-dns-rust acme-dns-client-rust
-          cd ..
 
-          
-          # FreeBSD packaging
-          cp target/x86_64-unknown-freebsd/release/acme-dns-rust dist/acme-dns-rust
-          cp acme-dns-client-rust/target/x86_64-unknown-freebsd/release/acme-dns-client-rust dist/acme-dns-client-rust
+      - name: Upload Linux Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-binaries
+          path: |
+            dist/acme-dns-rust-linux-amd64.tar.gz
+            dist/acme-dns-client-rust-linux-amd64.tar.gz
+
+  build-freebsd:
+    name: Build FreeBSD (amd64)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Build on FreeBSD VM
+        uses: vmactions/freebsd-vm@v1
+        with:
+          usesh: true
+          prepare: |
+            pkg install -y rust sqlite3 postgresql15-client
+          run: |
+            cargo build --release
+            cd acme-dns-client-rust && cargo build --release
+
+      - name: Package FreeBSD Binaries
+        run: |
+          mkdir -p dist
+          cp target/release/acme-dns-rust dist/acme-dns-rust
+          cp acme-dns-client-rust/target/release/acme-dns-client-rust dist/acme-dns-client-rust
           cd dist
           tar -czf acme-dns-rust-freebsd-amd64.tar.gz acme-dns-rust
           tar -czf acme-dns-client-rust-freebsd-amd64.tar.gz acme-dns-client-rust
-          rm acme-dns-rust acme-dns-client-rust
-          cd ..
+
+      - name: Upload FreeBSD Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: freebsd-binaries
+          path: |
+            dist/acme-dns-rust-freebsd-amd64.tar.gz
+            dist/acme-dns-client-rust-freebsd-amd64.tar.gz
+
+  release:
+    name: Create GitHub Release
+    needs: [build-linux, build-freebsd]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download Linux Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-binaries
+          path: dist/
+
+      - name: Download FreeBSD Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: freebsd-binaries
+          path: dist/
 
       - name: Create GitHub Release and Upload Artifacts
         uses: softprops/action-gh-release@v2
