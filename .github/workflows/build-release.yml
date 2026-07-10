@@ -12,6 +12,9 @@ jobs:
     permissions:
       contents: write
 
+    env:
+      AWS_LC_SYS_NO_ASM: 1
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
