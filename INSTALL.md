@@ -4,6 +4,41 @@ This document details how to compile, configure, and install both the `acme-dns-
 
 ---
 
+## Prerequisites: Installing Rust and Cargo
+
+Both the server and the client require the Rust toolchain to compile from source. The recommended way to install it is via **rustup**.
+
+### Linux (Debian/Ubuntu)
+```bash
+# Install system build dependencies
+sudo apt-get update
+sudo apt-get install -y curl build-essential pkg-config libssl-dev libsqlite3-dev
+
+# Install rustup (installs Rust + Cargo)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# Load Cargo into the current shell session
+source $HOME/.cargo/env
+
+# Verify installation
+rustc --version
+cargo --version
+```
+
+### FreeBSD
+```bash
+# Install Rust and Cargo via pkg (includes cargo)
+pkg install -y rust
+
+# Verify installation
+rustc --version
+cargo --version
+```
+
+> **Note:** After installation, open a new terminal session or run `source $HOME/.cargo/env` to ensure `cargo` is available in your `PATH`.
+
+---
+
 # SECTION 1: acme-dns-rust (The Server)
 
 ## 1. Compilation
@@ -95,6 +130,9 @@ curl -k -I https://<your-acme-dns-domain>/health
 The client is a CLI tool designed to be executed by Certbot's authentication and cleanup hooks during certificate issuance.
 
 ## 1. Compilation
+
+> **Prerequisite:** Ensure Rust and Cargo are installed. See the [Prerequisites](#prerequisites-installing-rust-and-cargo) section at the top of this document.
+
 Build the client binary in release mode:
 ```bash
 # Navigate to the client directory
