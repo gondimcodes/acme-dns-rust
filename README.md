@@ -109,22 +109,26 @@ The client CLI tool handles dynamic registration and token updates automatically
 
 ## 2. CLI Operations & Certbot Integration
 
+### Manual Domain Registration (Initial Setup)
+Before generating certificates, you can register a new domain in your server instance to set up CNAME records:
+```bash
+acme-dns-client-rust -s https://auth.domain.com register -d <FQDN>
+```
+*(This command will output the required DNS CNAME records to point your domain to the acme-dns server).*
 
-The client operates in two modes: **authentication** and **cleanup**.
-
-### Registering and Issuing Certificates
-Add the client to your Certbot command as validation hooks:
+### Registering and Issuing Certificates via Certbot
+To issue certificates automatically, add the client hooks to your Certbot command:
 ```bash
 certbot certonly \
   --manual \
-  --manual-auth-hook acme-dns-client-rust \
-  --manual-cleanup-hook acme-dns-client-rust \
   --preferred-challenges dns \
+  --manual-auth-hook '/usr/local/bin/acme-dns-client-rust' \
   -d "*.example.com" -d "example.com"
 ```
 
 ### Authentication Flow (Automatic)
 During the authentication hook step, the client will:
+
 1. Check if the subdomain registration credentials JSON exists in `/etc/acme-dns-client/`.
 2. If not found, it automatically requests new API credentials from the registration endpoint (`/register`) of the configured `acme-dns-rust` server.
 3. Prints the required DNS CNAME record for your domain (e.g. `_acme-challenge.example.com CNAME <subdomain_uuid>.auth.example.com`).
