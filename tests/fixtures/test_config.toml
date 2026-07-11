@@ -9,7 +9,7 @@ debug = false
 
 [database]
 engine = "sqlite"
-connection = ":memory:"
+connection = "test_db.db"
 
 [api]
 ip = "127.0.0.1"

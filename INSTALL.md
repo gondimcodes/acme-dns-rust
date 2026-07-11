@@ -81,11 +81,18 @@ sudo chmod 640 /etc/acme-dns-rust/config.toml
 ```
 
 ## 3. Database Setup (SQLite Example)
-Edit `/etc/acme-dns-rust/config.toml` and ensure your database connection path is configured correctly:
+Edit `/etc/acme-dns-rust/config.toml` and configure the database and cleanup defaults:
 ```toml
 [database]
 engine = "sqlite"
 connection = "/var/lib/acme-dns-rust/acme-dns.db"
+
+[api]
+# Enable automatic cleanup of registered users that never completed a TXT update
+# (Mitigates database bloat from bots registering accounts and never using them)
+cleanup_orphans = true
+# Time (in minutes) to wait before deleting an inactive/orphan user
+orphan_timeout_mins = 30
 ```
 
 ## 4. Install Systemd Service

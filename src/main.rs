@@ -89,6 +89,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .expect("Failed to install Prometheus recorder"),
     );
 
+    // Spawn Database Orphan Account Cleaner if enabled
+    if config.api.cleanup_orphans {
+        let db_clone = Arc::clone(&db);
+        let timeout_secs = config.api.orphan_timeout_mins as i64 * 60;
+        tokio::spawn(async move {
+            info!("Starting background database cleaner loop (orphan timeout: {} minutes)", timeout_secs / 60);
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(300)); // Run every 5 minutes
+            loop {
+                interval.tick().await;
+                match db_clone.cleanup_orphan_records(timeout_secs).await {
+                    Ok(count) if count > 0 => {
+                        info!("Cleaned up {} orphan/unused registered accounts", count);
+                    }
+                    Err(e) => {
+                        error!("Error running orphan database cleaner task: {}", e);
+                    }
+                    _ => {}
+                }
+            }
+        });
+    }
+
     let config = Arc::new(config);
     let state = AppState {
         db: Arc::clone(&db),
@@ -239,10 +261,10 @@ async fn run_user_command(action: UserAction, config: Config) -> Result<(), Box<
     match action {
         UserAction::List => {
             let users = db.list_users().await?;
-            println!("{:<38} | {:<38}", "Username", "Subdomain");
-            println!("{}", "-".repeat(79));
+            println!("{:<38} | {:<38} | {:<19}", "Username", "Subdomain", "Created At");
+            println!("{}", "-".repeat(101));
             for u in users {
-                println!("{:<38} | {:<38}", u.username, u.subdomain);
+                println!("{:<38} | {:<38} | {:<19}", u.username, u.subdomain, u.created_at);
             }
         }
         UserAction::Delete { username } => {

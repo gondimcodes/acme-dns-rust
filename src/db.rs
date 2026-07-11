@@ -11,6 +11,7 @@ pub struct Record {
     pub password_hash: String,
     pub subdomain: String,
     pub allow_from: Vec<String>,
+    pub created_at: String,
 }
 
 pub struct DbPool {
@@ -27,7 +28,9 @@ impl DbPool {
             _ => {
                 // SQLite: sqlx AnyPool expects sqlite:// scheme
                 let conn = &config.database.connection;
-                if conn.starts_with("sqlite://") || conn == ":memory:" {
+                if conn == ":memory:" {
+                    "sqlite::memory:?cache=shared".to_string()
+                } else if conn.starts_with("sqlite://") || conn.starts_with("sqlite:") {
                     conn.clone()
                 } else {
                     format!("sqlite://{}", conn)
@@ -94,13 +97,16 @@ impl DbPool {
         let allow_from_json = serde_json::to_string(&allow_from)
             .map_err(|e| sqlx::Error::Configuration(e.to_string().into()))?;
 
+        let now_str = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
         sqlx::query(
-            "INSERT INTO records (Username, Password, Subdomain, AllowFrom) VALUES (?, ?, ?, ?)"
+            "INSERT INTO records (Username, Password, Subdomain, AllowFrom, CreatedAt) VALUES (?, ?, ?, ?, ?)"
         )
         .bind(username.to_string())
         .bind(&password_hash)
         .bind(&subdomain)
         .bind(&allow_from_json)
+        .bind(&now_str)
         .execute(&self.pool)
         .await?;
 
@@ -109,7 +115,7 @@ impl DbPool {
 
     pub async fn get_user_by_username(&self, username: &str) -> Result<Option<Record>, sqlx::Error> {
         let row = sqlx::query(
-            "SELECT Username, Password, Subdomain, AllowFrom FROM records WHERE Username = ?"
+            "SELECT Username, Password, Subdomain, AllowFrom, CAST(CreatedAt AS TEXT) as CreatedAt FROM records WHERE Username = ?"
         )
         .bind(username)
         .fetch_optional(&self.pool)
@@ -118,18 +124,20 @@ impl DbPool {
         Ok(row.map(|r| {
             let u: String = r.get("Username");
             let allow_from_raw: String = r.get("AllowFrom");
+            let created_at: String = r.try_get("CreatedAt").unwrap_or_default();
             Record {
                 username: u.clone(),
                 password_hash: r.get("Password"),
                 subdomain: r.get("Subdomain"),
                 allow_from: Self::parse_allow_from(&allow_from_raw, &u),
+                created_at,
             }
         }))
     }
 
     pub async fn get_user_by_subdomain(&self, subdomain: &str) -> Result<Option<Record>, sqlx::Error> {
         let row = sqlx::query(
-            "SELECT Username, Password, Subdomain, AllowFrom FROM records WHERE Subdomain = ?"
+            "SELECT Username, Password, Subdomain, AllowFrom, CAST(CreatedAt AS TEXT) as CreatedAt FROM records WHERE Subdomain = ?"
         )
         .bind(subdomain)
         .fetch_optional(&self.pool)
@@ -138,18 +146,20 @@ impl DbPool {
         Ok(row.map(|r| {
             let u: String = r.get("Username");
             let allow_from_raw: String = r.get("AllowFrom");
+            let created_at: String = r.try_get("CreatedAt").unwrap_or_default();
             Record {
                 username: u.clone(),
                 password_hash: r.get("Password"),
                 subdomain: r.get("Subdomain"),
                 allow_from: Self::parse_allow_from(&allow_from_raw, &u),
+                created_at,
             }
         }))
     }
 
     pub async fn list_users(&self) -> Result<Vec<Record>, sqlx::Error> {
         let rows = sqlx::query(
-            "SELECT Username, Password, Subdomain, AllowFrom FROM records"
+            "SELECT Username, Password, Subdomain, AllowFrom, CAST(CreatedAt AS TEXT) as CreatedAt FROM records"
         )
         .fetch_all(&self.pool)
         .await?;
@@ -157,11 +167,13 @@ impl DbPool {
         Ok(rows.into_iter().map(|r| {
             let u: String = r.get("Username");
             let allow_from_raw: String = r.get("AllowFrom");
+            let created_at: String = r.try_get("CreatedAt").unwrap_or_default();
             Record {
                 username: u.clone(),
                 password_hash: r.get("Password"),
                 subdomain: r.get("Subdomain"),
                 allow_from: Self::parse_allow_from(&allow_from_raw, &u),
+                created_at,
             }
         }).collect())
     }
@@ -172,6 +184,20 @@ impl DbPool {
             .execute(&self.pool)
             .await?;
         Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn cleanup_orphan_records(&self, timeout_seconds: i64) -> Result<u64, sqlx::Error> {
+        let cutoff = chrono::Utc::now() - chrono::Duration::seconds(timeout_seconds);
+        let cutoff_str = cutoff.format("%Y-%m-%d %H:%M:%S").to_string();
+
+        let result = sqlx::query(
+            "DELETE FROM records WHERE CreatedAt < ? AND Subdomain NOT IN (SELECT DISTINCT Subdomain FROM txt)"
+        )
+        .bind(cutoff_str)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected())
     }
 
     // ─── TXT records ───────────────────────────────────────────────────────────

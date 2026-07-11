@@ -69,6 +69,10 @@ hsts_preload = false
 trusted_proxies = []
 # Max registration requests per minute per IP (0 = use global rate limiter only)
 register_rate_limit_per_min = 1
+# Enable automatic cleanup of registered users that never completed a TXT update
+cleanup_orphans = true
+# Time (in minutes) to wait before deleting an inactive/orphan user
+orphan_timeout_mins = 30
 
 [logconfig]
 # logging level: "error", "warning", "info" or "debug"

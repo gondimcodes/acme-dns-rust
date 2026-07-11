@@ -1,7 +1,14 @@
 use acme_dns_rust::config::Config;
 
+fn cleanup_test_db() {
+    let _ = std::fs::remove_file("test_db.db");
+    let _ = std::fs::remove_file("test_db.db-shm");
+    let _ = std::fs::remove_file("test_db.db-wal");
+}
+
 #[test]
 fn test_config_load_valid() {
+    cleanup_test_db();
     let config = Config::load("tests/fixtures/test_config.toml")
         .expect("Should load test config");
     assert_eq!(config.general.domain, "auth.test.local");

@@ -1,5 +1,19 @@
 # Changelog — acme-dns-rust
 
+## [1.2.0] — 2026-07-11
+
+This release adds security defenses against registration flooding and CLI auditing enhancements.
+
+### 🔒 Security Fixes
+- **Orphan Accounts Cleaner (Garbage Collection)**: Added a background cleaner thread that periodically purges accounts registered via `/register` that have not performed a TXT challenge update within a configured timeout (default: 30 minutes). Enabled by default (`cleanup_orphans = true`, `orphan_timeout_mins = 30`).
+- **SQLite Schema Migration Fix**: Re-architected migrations (`20260711000000_add_created_at_to_records.sql`) to avoid adding dynamic non-constant defaults (`CURRENT_TIMESTAMP`) directly inside SQLite `ALTER TABLE ADD COLUMN` queries, preventing service crashes on existing legacy databases.
+
+### 🏗️ Architecture & Code Quality
+- **CLI CreatedAt Auditing**: Enhanced the CLI tool command `users list` to display user account creation timestamps, allowing easy detection of registration floods. Added `CAST(CreatedAt AS TEXT)` on SQL queries to prevent genenic driver parsing type mismatch errors on `sqlx::AnyPool`.
+- **Integration Test Suite**: Created `cleanup_test.rs` to automatically verify the cleanup algorithm using `/tmp` temporary SQLite connections.
+
+---
+
 ## [1.1.0] — 2026-07-10
 
 This release introduces a complete technical audit and revision focusing on security, performance, architecture, and overall service stability.

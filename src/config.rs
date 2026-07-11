@@ -54,7 +54,14 @@ pub struct Api {
     pub trusted_proxies: Vec<String>,
     #[serde(default)]
     pub register_rate_limit_per_min: u32,
+    #[serde(default = "default_cleanup_orphans")]
+    pub cleanup_orphans: bool,
+    #[serde(default = "default_orphan_timeout_mins")]
+    pub orphan_timeout_mins: u32,
 }
+
+fn default_cleanup_orphans() -> bool { true }
+fn default_orphan_timeout_mins() -> u32 { 30 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LogConfig {
