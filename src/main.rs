@@ -261,10 +261,10 @@ async fn run_user_command(action: UserAction, config: Config) -> Result<(), Box<
     match action {
         UserAction::List => {
             let users = db.list_users().await?;
-            println!("{:<38} | {:<38} | {:<19}", "Username", "Subdomain", "Created At");
-            println!("{}", "-".repeat(101));
+            println!("{:<38} | {:<38} | {:<19} | {:<11}", "Username", "Subdomain", "Created At", "Has Updated");
+            println!("{}", "-".repeat(116));
             for u in users {
-                println!("{:<38} | {:<38} | {:<19}", u.username, u.subdomain, u.created_at);
+                println!("{:<38} | {:<38} | {:<19} | {:<11}", u.username, u.subdomain, u.created_at, if u.has_updated { "Yes" } else { "No" });
             }
         }
         UserAction::Delete { username } => {

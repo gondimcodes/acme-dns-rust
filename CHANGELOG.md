@@ -1,5 +1,16 @@
 # Changelog — acme-dns-rust
 
+## [1.2.1] — 2026-07-15
+
+This release fixes a critical bug in the orphan account cleanup routine and improves the test suite stability.
+
+### 🔒 Bug Fixes
+- **Accidental User Deletion**: Re-architected the orphan cleanup logic. We now use a persistent `HasUpdated` flag on the `records` table instead of querying the transient `txt` table (which is subject to rotation and clearing). This prevents users who have performed updates in the past from being accidentally deleted when their active TXT records expire.
+- **Database Migration**: Added migration `20260715000000_add_has_updated_to_records` to automatically add the `HasUpdated` column to the `records` table and safely backfill existing users.
+- **Integration Test Path**: Fixed `cleanup_test.rs` to write its database inside the `target` directory and pre-create the SQLite file to avoid path resolution and connection failures.
+
+---
+
 ## [1.2.0] — 2026-07-11
 
 This release adds security defenses against registration flooding and CLI auditing enhancements.

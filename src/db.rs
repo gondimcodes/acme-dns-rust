@@ -12,6 +12,7 @@ pub struct Record {
     pub subdomain: String,
     pub allow_from: Vec<String>,
     pub created_at: String,
+    pub has_updated: bool,
 }
 
 pub struct DbPool {
@@ -115,7 +116,7 @@ impl DbPool {
 
     pub async fn get_user_by_username(&self, username: &str) -> Result<Option<Record>, sqlx::Error> {
         let row = sqlx::query(
-            "SELECT Username, Password, Subdomain, AllowFrom, CAST(CreatedAt AS TEXT) as CreatedAt FROM records WHERE Username = ?"
+            "SELECT Username, Password, Subdomain, AllowFrom, CAST(CreatedAt AS TEXT) as CreatedAt, HasUpdated FROM records WHERE Username = ?"
         )
         .bind(username)
         .fetch_optional(&self.pool)
@@ -125,19 +126,21 @@ impl DbPool {
             let u: String = r.get("Username");
             let allow_from_raw: String = r.get("AllowFrom");
             let created_at: String = r.try_get("CreatedAt").unwrap_or_default();
+            let has_updated: i64 = r.try_get("HasUpdated").unwrap_or(0);
             Record {
                 username: u.clone(),
                 password_hash: r.get("Password"),
                 subdomain: r.get("Subdomain"),
                 allow_from: Self::parse_allow_from(&allow_from_raw, &u),
                 created_at,
+                has_updated: has_updated != 0,
             }
         }))
     }
 
     pub async fn get_user_by_subdomain(&self, subdomain: &str) -> Result<Option<Record>, sqlx::Error> {
         let row = sqlx::query(
-            "SELECT Username, Password, Subdomain, AllowFrom, CAST(CreatedAt AS TEXT) as CreatedAt FROM records WHERE Subdomain = ?"
+            "SELECT Username, Password, Subdomain, AllowFrom, CAST(CreatedAt AS TEXT) as CreatedAt, HasUpdated FROM records WHERE Subdomain = ?"
         )
         .bind(subdomain)
         .fetch_optional(&self.pool)
@@ -147,19 +150,21 @@ impl DbPool {
             let u: String = r.get("Username");
             let allow_from_raw: String = r.get("AllowFrom");
             let created_at: String = r.try_get("CreatedAt").unwrap_or_default();
+            let has_updated: i64 = r.try_get("HasUpdated").unwrap_or(0);
             Record {
                 username: u.clone(),
                 password_hash: r.get("Password"),
                 subdomain: r.get("Subdomain"),
                 allow_from: Self::parse_allow_from(&allow_from_raw, &u),
                 created_at,
+                has_updated: has_updated != 0,
             }
         }))
     }
 
     pub async fn list_users(&self) -> Result<Vec<Record>, sqlx::Error> {
         let rows = sqlx::query(
-            "SELECT Username, Password, Subdomain, AllowFrom, CAST(CreatedAt AS TEXT) as CreatedAt FROM records"
+            "SELECT Username, Password, Subdomain, AllowFrom, CAST(CreatedAt AS TEXT) as CreatedAt, HasUpdated FROM records"
         )
         .fetch_all(&self.pool)
         .await?;
@@ -168,12 +173,14 @@ impl DbPool {
             let u: String = r.get("Username");
             let allow_from_raw: String = r.get("AllowFrom");
             let created_at: String = r.try_get("CreatedAt").unwrap_or_default();
+            let has_updated: i64 = r.try_get("HasUpdated").unwrap_or(0);
             Record {
                 username: u.clone(),
                 password_hash: r.get("Password"),
                 subdomain: r.get("Subdomain"),
                 allow_from: Self::parse_allow_from(&allow_from_raw, &u),
                 created_at,
+                has_updated: has_updated != 0,
             }
         }).collect())
     }
@@ -191,7 +198,7 @@ impl DbPool {
         let cutoff_str = cutoff.format("%Y-%m-%d %H:%M:%S").to_string();
 
         let result = sqlx::query(
-            "DELETE FROM records WHERE CreatedAt < ? AND Subdomain NOT IN (SELECT DISTINCT Subdomain FROM txt)"
+            "DELETE FROM records WHERE CreatedAt < ? AND HasUpdated = 0"
         )
         .bind(cutoff_str)
         .execute(&self.pool)
@@ -227,6 +234,13 @@ impl DbPool {
         )
         .bind(subdomain)
         .bind(txt)
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            "UPDATE records SET HasUpdated = 1 WHERE Subdomain = ?"
+        )
+        .bind(subdomain)
         .execute(&self.pool)
         .await?;
 

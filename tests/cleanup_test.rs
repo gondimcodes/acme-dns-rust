@@ -8,14 +8,16 @@ fn cleanup_test_db(db_path: &str) {
 
 #[tokio::test]
 async fn test_cleanup_orphan_records() {
-    let db_path_str = "/tmp/test_db.db".to_string();
+    let db_path_str = "/home/gondim/projetos/acme-dns-rust/target/test_db.db".to_string();
 
     cleanup_test_db(&db_path_str);
+    // Create an empty file so SQLite can open it
+    let _ = std::fs::File::create(&db_path_str);
 
     let mut config = Config::load("tests/fixtures/test_config.toml")
         .expect("Should load test config");
     
-    // Override connection string to use /tmp/test_db.db
+    // Override connection string to use the absolute target path
     config.database.connection = db_path_str.clone();
 
     let db = DbPool::new(&config).await.expect("Should init DB");
@@ -46,6 +48,5 @@ async fn test_cleanup_orphan_records() {
 
     let user2 = db.get_user_by_username(&username2.to_string()).await.unwrap();
     assert!(user2.is_some());
-
     cleanup_test_db(&db_path_str);
 }
