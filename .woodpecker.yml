@@ -1,0 +1,8 @@
+kind: pipeline
+name: test
+
+steps:
+  test:
+    image: rust:latest
+    commands:
+      - cargo test --workspace
