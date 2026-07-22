@@ -1,8 +1,36 @@
 kind: pipeline
-name: test
+name: test-and-release
 
 steps:
   test:
     image: rust:latest
     commands:
       - cargo test --workspace -j 1
+    when:
+      event: [push, pull_request]
+
+  build:
+    image: rust:latest
+    commands:
+      - cargo build --release
+      - cd acme-dns-client-rust && cargo build --release && cd ..
+      - mkdir -p dist
+      - cp target/release/acme-dns-rust dist/acme-dns-rust
+      - cp acme-dns-client-rust/target/release/acme-dns-client-rust dist/acme-dns-client-rust
+      - cd dist
+      - tar -czf acme-dns-rust-linux-amd64.tar.gz acme-dns-rust
+      - tar -czf acme-dns-client-rust-linux-amd64.tar.gz acme-dns-client-rust
+    when:
+      event: tag
+
+  publish:
+    image: woodpeckerci/plugin-release
+    settings:
+      api_key:
+        from_secret: codeberg_token
+      base_url: https://codeberg.org
+      files:
+        - dist/acme-dns-rust-linux-amd64.tar.gz
+        - dist/acme-dns-client-rust-linux-amd64.tar.gz
+    when:
+      event: tag
