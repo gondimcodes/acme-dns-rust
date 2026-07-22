@@ -8,7 +8,9 @@ fn cleanup_test_db(db_path: &str) {
 
 #[tokio::test]
 async fn test_cleanup_orphan_records() {
-    let db_path_str = "/home/gondim/projetos/acme-dns-rust/target/test_db.db".to_string();
+    let target_dir = format!("{}/target", env!("CARGO_MANIFEST_DIR"));
+    let _ = std::fs::create_dir_all(&target_dir);
+    let db_path_str = format!("{}/test_db.db", target_dir);
 
     cleanup_test_db(&db_path_str);
     // Create an empty file so SQLite can open it
