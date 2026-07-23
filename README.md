@@ -147,3 +147,13 @@ During the authentication hook step, the client will:
 
 ### Cleanup Flow (Automatic)
 During the cleanup hook step, the client updates the TXT value in the server API to empty strings, cleaning up the validation state.
+
+---
+
+## 🚀 CI/CD & Automação de Releases (Codeberg)
+
+Este repositório possui suporte a automação de compilação e testes através do **Woodpecker CI** hospedado no Codeberg:
+
+* **Integração Contínua (CI):** A cada `push` ou `pull_request` enviado para a branch `main`, a suíte completa de testes de integração e testes unitários é executada de forma automática (com paralelismo limitado a `-j 1` para respeitar as diretrizes de recursos compartilhados do Codeberg).
+* **Entrega Contínua (CD):** Ao criar e enviar uma tag de versão (ex: `v1.2.1`), o pipeline realiza a compilação do servidor (`acme-dns-rust`) e do cliente (`acme-dns-client-rust`) em modo de produção (Release) para Linux x86_64, compacta em arquivos `.tar.gz` e anexa os arquivos finais diretamente na página de Versões do repositório no Codeberg.
+
