@@ -150,10 +150,10 @@ During the cleanup hook step, the client updates the TXT value in the server API
 
 ---
 
-## 🚀 CI/CD & Automação de Releases (Codeberg)
+## 🚀 CI/CD & Release Automation (Codeberg)
 
-Este repositório possui suporte a automação de compilação e testes através do **Woodpecker CI** hospedado no Codeberg:
+This repository supports build and test automation via **Woodpecker CI** hosted on Codeberg:
 
-* **Integração Contínua (CI):** A cada `push` ou `pull_request` enviado para a branch `main`, a suíte completa de testes de integração e testes unitários é executada de forma automática (com paralelismo limitado a `-j 1` para respeitar as diretrizes de recursos compartilhados do Codeberg).
-* **Entrega Contínua (CD):** Ao criar e enviar uma tag de versão (ex: `v1.2.1`), o pipeline realiza a compilação do servidor (`acme-dns-rust`) e do cliente (`acme-dns-client-rust`) em modo de produção (Release) para Linux x86_64, compacta em arquivos `.tar.gz` e anexa os arquivos finais diretamente na página de Versões do repositório no Codeberg.
+* **Continuous Integration (CI):** On every `push` or `pull_request` sent to the `main` branch, the complete suite of integration and unit tests is executed automatically (with parallelism limited to `-j 1` to respect Codeberg's shared resource guidelines).
+* **Continuous Delivery (CD):** When creating and pushing a version tag (e.g., `v1.2.1`), the pipeline compiles the server (`acme-dns-rust`) and client (`acme-dns-client-rust`) in production mode (Release) for Linux x86_64, compresses them into `.tar.gz` files, and attaches the binaries directly to the Releases page on Codeberg.
 
