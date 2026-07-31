@@ -23,6 +23,7 @@ pub struct AppState {
     pub db: Arc<DbPool>,
     pub config: Arc<Config>, // PERF-02: Arc<Config> avoids deep clones
     pub metrics_handle: Arc<PrometheusHandle>,
+    pub txt_cache: Arc<moka::future::Cache<String, Vec<String>>>,
 }
 
 #[derive(Serialize)]
@@ -258,9 +259,13 @@ async fn register(
         Ok(b) => b,
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
     };
-    let payload: RegisterRequest = match serde_json::from_slice(&body) {
-        Ok(p) => p,
-        Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+    let payload: RegisterRequest = if body.is_empty() {
+        RegisterRequest { allowfrom: None }
+    } else {
+        match serde_json::from_slice(&body) {
+            Ok(p) => p,
+            Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+        }
     };
 
     let allow_from = payload.allowfrom.unwrap_or_default();
@@ -393,6 +398,7 @@ async fn update(
 
     match state.db.update_txt(&payload.subdomain, &payload.txt).await {
         Ok(_) => {
+            state.txt_cache.invalidate(&payload.subdomain).await;
             counter!("acme_dns_update_total", "status" => "success").increment(1);
             (
                 StatusCode::OK,

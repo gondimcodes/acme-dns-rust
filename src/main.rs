@@ -4,7 +4,7 @@ use cli::{Cli, Commands, UserAction};
 use std::sync::Arc;
 use std::net::SocketAddr;
 use tokio::net::{UdpSocket, TcpListener};
-use hickory_server::ServerFuture;
+use hickory_server::Server;
 use tracing::{info, error};
 use tracing_subscriber::FmtSubscriber;
 use metrics_exporter_prometheus::PrometheusBuilder;
@@ -48,11 +48,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         e
     })?;
 
-    let mut catalog = hickory_server::authority::Catalog::new();
+    use std::str::FromStr;
+    let mut catalog = hickory_server::zone_handler::Catalog::new();
     let own_domain_lower = hickory_server::proto::rr::LowerName::new(&dns_handler.own_domain);
-    catalog.upsert(own_domain_lower, Box::new(Arc::new(dns_handler.clone())));
+    catalog.upsert(own_domain_lower, vec![Arc::new(dns_handler.clone())]);
 
-    let mut dns_server = ServerFuture::new(catalog);
+    let domain_str = dns_handler.own_domain.to_string();
+    let domain_normalized = domain_str.trim_end_matches('.');
+    if domain_normalized.starts_with("auth.") {
+        let base_domain_str = format!("{}.", &domain_normalized[5..]);
+        if let Ok(base_name) = hickory_server::proto::rr::Name::from_str(&base_domain_str) {
+            let base_domain_lower = hickory_server::proto::rr::LowerName::new(&base_name);
+            catalog.upsert(base_domain_lower, vec![Arc::new(dns_handler.clone())]);
+        }
+    }
+
+    let mut dns_server = Server::new(catalog);
 
     let listen_addrs: Vec<SocketAddr> = config.general.listen
         .split(',')
@@ -63,7 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let udp = UdpSocket::bind(addr).await?;
         dns_server.register_socket(udp);
         let tcp = TcpListener::bind(addr).await?;
-        dns_server.register_listener(tcp, std::time::Duration::from_secs(5));
+        dns_server.register_listener(tcp, std::time::Duration::from_secs(5), 1024);
         info!("DNS listening on {} ({})", addr, config.general.proto);
     }
 
@@ -116,6 +127,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db: Arc::clone(&db),
         config: Arc::clone(&config),
         metrics_handle: Arc::clone(&metrics_handle),
+        txt_cache: Arc::clone(&dns_handler.txt_cache),
     };
     let api_router = create_router(state);
 

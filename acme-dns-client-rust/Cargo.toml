@@ -1,6 +1,6 @@
 [package]
 name = "acme-dns-client-rust"
-version = "1.0.1"
+version = "1.0.2"
 edition = "2024"
 
 [dependencies]
@@ -8,5 +8,5 @@ tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", features = ["json"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-clap = { version = "4.0", features = ["derive"] }
-hickory-resolver = "0.24"
+clap = { version = "4", features = ["derive", "env"] }
+hickory-resolver = { version = "0.26", features = ["tokio", "system-config"] }

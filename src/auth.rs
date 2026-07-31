@@ -25,9 +25,10 @@ pub fn dummy_verify() {
     let _ = bcrypt::verify("dummy_password_for_timing_eq", "$2b$10$invalidsaltandhashvaluePAD");
 }
 
-/// SEG-04: validate that s is a valid ACME DNS-01 token (Base64URL, exactly 43 chars)
+/// SEG-04: validate that s is a valid TXT token (Base64/Base64URL, 1 to 255 chars)
 pub fn is_valid_acme_token(s: &str) -> bool {
-    s.len() == 43 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    let s = s.trim();
+    !s.is_empty() && s.len() <= 255 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '=' || c == '+' || c == '/')
 }
 
 #[cfg(test)]
@@ -70,25 +71,20 @@ mod tests {
 
     #[test]
     fn test_is_valid_acme_token_valid() {
-        // A valid Base64URL token of exactly 43 chars
-        let token43: String = "A".repeat(43);
-        assert!(is_valid_acme_token(&token43));
-    }
-
-    #[test]
-    fn test_is_valid_acme_token_too_short() {
-        assert!(!is_valid_acme_token("short"));
+        let token: String = "A".repeat(43);
+        assert!(is_valid_acme_token(&token));
+        assert!(is_valid_acme_token("short"));
+        assert!(is_valid_acme_token(&"B".repeat(255)));
     }
 
     #[test]
     fn test_is_valid_acme_token_too_long() {
-        let token = "A".repeat(44);
+        let token = "A".repeat(256);
         assert!(!is_valid_acme_token(&token));
     }
 
     #[test]
     fn test_is_valid_acme_token_invalid_chars() {
-        // 43 chars but with invalid characters (spaces, special chars)
         let token = format!("{}{}", "A".repeat(42), "!");
         assert!(!is_valid_acme_token(&token));
     }

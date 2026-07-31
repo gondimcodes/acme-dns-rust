@@ -5,17 +5,22 @@ use std::path::PathBuf;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::time::Duration;
-use hickory_resolver::TokioAsyncResolver;
+use hickory_resolver::TokioResolver;
 use hickory_resolver::config::{ResolverConfig, ResolverOpts};
 
 const DEFAULT_STORAGE: &str = "/etc/acmedns/clientstorage.json";
-const PUBLIC_ACME_DNS: &str = "https://auth.acme-dns.io";
+
+fn build_resolver(config: ResolverConfig, opts: ResolverOpts) -> TokioResolver {
+    let mut builder = TokioResolver::builder_with_config(config, Default::default());
+    *builder.options_mut() = opts;
+    builder.build().unwrap()
+}
 
 #[derive(Debug, Parser)]
-#[command(name = "acme-dns-client-rust", version = "0.1.0", about = "acme-dns client utility in Rust")]
+#[command(name = "acme-dns-client-rust", version, about = "acme-dns client utility in Rust")]
 struct Cli {
-    #[arg(short, long, default_value = "https://auth.acme-dns.io", help = "Acme-dns server instance to use")]
-    server: String,
+    #[arg(short, long, env = "ACME_DNS_SERVER", help = "Acme-dns server instance URL (or set ACME_DNS_SERVER env var)")]
+    server: Option<String>,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -33,9 +38,6 @@ enum Commands {
 
         #[arg(long, help = "Comma separated list of CIDR masks allowed to update this domain")]
         allow: Option<String>,
-
-        #[arg(long, default_value_t = false, help = "Suppresses warning when registering on public instances")]
-        dangerous: bool,
     },
 
     #[command(about = "Check CNAME and CAA configurations for a domain")]
@@ -126,7 +128,17 @@ impl Storage {
     }
 }
 
-fn get_resolver(ns_addr: &str) -> Option<TokioAsyncResolver> {
+fn create_name_server(socket_addr: std::net::SocketAddr) -> hickory_resolver::config::NameServerConfig {
+    hickory_resolver::config::NameServerConfig::new(
+        socket_addr.ip(),
+        false,
+        vec![hickory_resolver::config::ConnectionConfig::new(
+            hickory_resolver::config::ProtocolConfig::Udp,
+        )],
+    )
+}
+
+fn get_resolver(ns_addr: &str) -> Option<TokioResolver> {
     let mut addr_str = ns_addr.to_string();
     // Normalize IPv6 raw addresses
     if addr_str.contains(':') && !addr_str.contains('[') && addr_str.chars().filter(|&c| c == ':').count() > 1 {
@@ -139,14 +151,7 @@ fn get_resolver(ns_addr: &str) -> Option<TokioAsyncResolver> {
     }
 
     if let Ok(socket_addr) = addr_str.parse::<std::net::SocketAddr>() {
-        let mut config = ResolverConfig::new();
-        config.add_name_server(hickory_resolver::config::NameServerConfig {
-            socket_addr,
-            protocol: hickory_resolver::config::Protocol::Udp,
-            tls_dns_name: None,
-            trust_negative_responses: false,
-            bind_addr: None,
-        });
+        let config = ResolverConfig::from_parts(None, vec![], vec![create_name_server(socket_addr)]);
         
         // Optimize options: fast timeout (1s) and no retries (1 attempt) to prevent wait latency
         let mut opts = ResolverOpts::default();
@@ -155,7 +160,7 @@ fn get_resolver(ns_addr: &str) -> Option<TokioAsyncResolver> {
         opts.timeout = Duration::from_secs(1);
         opts.attempts = 1;
         
-        Some(TokioAsyncResolver::tokio(config, opts))
+        Some(build_resolver(config, opts))
     } else {
         None
     }
@@ -164,7 +169,10 @@ fn get_resolver(ns_addr: &str) -> Option<TokioAsyncResolver> {
 // Recursive resolver helper to find the authoritative nameservers for any TLD structure
 async fn find_base_zone_ns(domain: &str) -> Vec<std::net::IpAddr> {
     let mut ips = Vec::new();
-    let resolver = TokioAsyncResolver::tokio(ResolverConfig::cloudflare(), ResolverOpts::default());
+    let resolver = build_resolver(
+        ResolverConfig::from_parts(None, vec![], vec![create_name_server("1.1.1.1:53".parse().unwrap())]),
+        ResolverOpts::default(),
+    );
     let mut parts: Vec<&str> = domain.trim_end_matches('.').split('.').collect();
     
     // Iterate from full subdomain down to the base domains (e.g. bola.circo.uk -> circo.uk)
@@ -173,8 +181,8 @@ async fn find_base_zone_ns(domain: &str) -> Vec<std::net::IpAddr> {
         let query = format!("{}.", current_zone);
         
         if let Ok(ns_lookup) = resolver.lookup(query, hickory_resolver::proto::rr::RecordType::NS).await {
-            for record in ns_lookup.iter() {
-                if let Some(ns_name) = record.as_ns() {
+            for record in ns_lookup.answers() {
+                if let hickory_resolver::proto::rr::RData::NS(ns_name) = &record.data {
                     // Resolve NS hostnames to IP addresses
                     if let Ok(ip_lookup) = resolver.lookup_ip(ns_name.to_string()).await {
                         for ip in ip_lookup.iter() {
@@ -192,11 +200,11 @@ async fn find_base_zone_ns(domain: &str) -> Vec<std::net::IpAddr> {
     ips
 }
 
-async fn check_cname(resolver: &TokioAsyncResolver, domain: &str, target: &str) -> bool {
+async fn check_cname(resolver: &TokioResolver, domain: &str, target: &str) -> bool {
     let query = format!("_acme-challenge.{}.", domain);
     match resolver.lookup(query, hickory_resolver::proto::rr::RecordType::CNAME).await {
         Ok(lookup) => {
-            for record in lookup.iter() {
+            for record in lookup.answers() {
                 let record_str = record.to_string().trim_end_matches('.').to_lowercase();
                 let target_str = target.trim_end_matches('.').to_lowercase();
                 
@@ -217,26 +225,19 @@ async fn check_cname(resolver: &TokioAsyncResolver, domain: &str, target: &str) 
 }
 
 // Authoritative NS query wrapper for CNAME records validation
-async fn check_cname_authoritative(custom_resolver: &Option<TokioAsyncResolver>, fallback_resolver: &TokioAsyncResolver, domain: &str, target: &str) -> bool {
+async fn check_cname_authoritative(custom_resolver: &Option<TokioResolver>, fallback_resolver: &TokioResolver, domain: &str, target: &str) -> bool {
     // 1. Resolve authoritative nameserver IPs for the base domain
     let auth_ips = find_base_zone_ns(domain).await;
     
     // 2. Query each authoritative nameserver directly
     for ns_ip in &auth_ips {
-        let mut auth_config = ResolverConfig::new();
-        auth_config.add_name_server(hickory_resolver::config::NameServerConfig {
-            socket_addr: std::net::SocketAddr::new(*ns_ip, 53),
-            protocol: hickory_resolver::config::Protocol::Udp,
-            tls_dns_name: None,
-            trust_negative_responses: false,
-            bind_addr: None,
-        });
+        let auth_config = ResolverConfig::from_parts(None, vec![], vec![create_name_server(std::net::SocketAddr::new(*ns_ip, 53))]);
         let mut auth_opts = ResolverOpts::default();
         auth_opts.timeout = Duration::from_secs(1);
         auth_opts.attempts = 1;
         auth_opts.ndots = 0;
         
-        let auth_resolver = TokioAsyncResolver::tokio(auth_config, auth_opts);
+        let auth_resolver = build_resolver(auth_config, auth_opts);
         if check_cname(&auth_resolver, domain, target).await {
             return true;
         }
@@ -302,7 +303,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Commands::Register { domain, ns, allow, dangerous }) => {
+        Some(Commands::Register { domain, ns, allow }) => {
             let clean_domain = domain.replace("*.", "");
             let mut data = storage.load();
 
@@ -311,12 +312,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Ok(());
             }
 
-            if cli.server == PUBLIC_ACME_DNS && !dangerous {
-                println!("WARNING: You are about to register an account on a public acme-dns instance.");
-                println!("This authorizes the instance owner to request/validate certificates on your behalf.");
-                println!("To suppress this warning, re-run with --dangerous flag.");
-                std::process::exit(0);
-            }
+            let server_url = match &cli.server {
+                Some(url) => url.trim_end_matches('/').to_string(),
+                None => {
+                    eprintln!("Error: Acme-dns server URL is required for registration.");
+                    eprintln!("Specify --server <URL> or set the ACME_DNS_SERVER environment variable.");
+                    std::process::exit(1);
+                }
+            };
 
             println!("Registering account for domain: {}...", clean_domain);
             let allow_from = if let Some(allow_list) = allow {
@@ -328,7 +331,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let req_client = reqwest::Client::new();
             let reg_payload = RegisterRequest { allowfrom: allow_from.clone() };
 
-            let res = req_client.post(format!("{}/register", cli.server))
+            let res = req_client.post(format!("{}/register", server_url))
                 .json(&reg_payload)
                 .send()
                 .await?;
@@ -345,7 +348,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 fulldomain: response.fulldomain.clone(),
                 subdomain: response.subdomain,
                 allow: allow_from,
-                server_url: cli.server.clone(),
+                server_url: server_url,
             };
 
             data.insert(clean_domain.clone(), account.clone());
@@ -362,21 +365,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("_acme-challenge.{}. IN CNAME {}.", clean_domain, account.fulldomain);
 
             // Prebuild public resolver as fallback using strictly IPv4 to prevent IPv6 routing timeouts
-            let mut fallback_config = ResolverConfig::new();
-            fallback_config.add_name_server(hickory_resolver::config::NameServerConfig {
-                socket_addr: "8.8.8.8:53".parse().unwrap(),
-                protocol: hickory_resolver::config::Protocol::Udp,
-                tls_dns_name: None,
-                trust_negative_responses: false,
-                bind_addr: None,
-            });
-            fallback_config.add_name_server(hickory_resolver::config::NameServerConfig {
-                socket_addr: "1.1.1.1:53".parse().unwrap(),
-                protocol: hickory_resolver::config::Protocol::Udp,
-                tls_dns_name: None,
-                trust_negative_responses: false,
-                bind_addr: None,
-            });
+            let fallback_config = ResolverConfig::from_parts(
+                None,
+                vec![],
+                vec![
+                    create_name_server("8.8.8.8:53".parse().unwrap()),
+                    create_name_server("1.1.1.1:53".parse().unwrap()),
+                ],
+            );
             
             // Disable search domains and system suffixes to prevent lookup latency
             let mut fallback_opts = ResolverOpts::default();
@@ -384,7 +380,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             fallback_opts.timeout = Duration::from_secs(1);
             fallback_opts.attempts = 1;
             
-            let fallback_resolver = TokioAsyncResolver::tokio(fallback_config, fallback_opts);
+            let fallback_resolver = build_resolver(fallback_config, fallback_opts);
             let custom_resolver = get_resolver(&ns);
 
             let cname_ok = check_cname_authoritative(&custom_resolver, &fallback_resolver, &clean_domain, &account.fulldomain).await;
@@ -447,7 +443,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("{}.         IN    CAA    0 issue \"letsencrypt.org; validationmethods=dns-01\"", clean_domain);
                 println!("{}.         IN    CAA    0 issuewild \"letsencrypt.org; validationmethods=dns-01\"", clean_domain);
                 
-                let fallback_resolver = TokioAsyncResolver::tokio(ResolverConfig::cloudflare(), ResolverOpts::default());
+                let fallback_resolver = build_resolver(
+                    ResolverConfig::from_parts(None, vec![], vec![create_name_server("1.1.1.1:53".parse().unwrap())]),
+                    ResolverOpts::default(),
+                );
                 if let Some(resolver) = get_resolver(&ns) {
                     println!("\nWaiting for CAA record creation (checking every 15s)...");
                     loop {
@@ -457,22 +456,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         // 1. Check Authoritative Nameservers directly
                         let auth_ips = find_base_zone_ns(&clean_domain).await;
                         for ns_ip in &auth_ips {
-                            let mut auth_config = ResolverConfig::new();
-                            auth_config.add_name_server(hickory_resolver::config::NameServerConfig {
-                                socket_addr: std::net::SocketAddr::new(*ns_ip, 53),
-                                protocol: hickory_resolver::config::Protocol::Udp,
-                                tls_dns_name: None,
-                                trust_negative_responses: false,
-                                bind_addr: None,
-                            });
+                            let auth_config = ResolverConfig::from_parts(None, vec![], vec![create_name_server(std::net::SocketAddr::new(*ns_ip, 53))]);
                             let mut auth_opts = ResolverOpts::default();
                             auth_opts.timeout = Duration::from_secs(1);
                             auth_opts.attempts = 1;
                             auth_opts.ndots = 0;
                             
-                            let auth_resolver = TokioAsyncResolver::tokio(auth_config, auth_opts);
+                            let auth_resolver = build_resolver(auth_config, auth_opts);
                             if let Ok(lookup) = auth_resolver.lookup(query.clone(), hickory_resolver::proto::rr::RecordType::CAA).await {
-                                if !lookup.is_empty() {
+                                if !lookup.answers().is_empty() {
                                     has_caa = true;
                                     break;
                                 }
@@ -482,7 +474,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         // 2. Check Custom user DNS resolver
                         if !has_caa {
                             if let Ok(lookup) = resolver.lookup(query.clone(), hickory_resolver::proto::rr::RecordType::CAA).await {
-                                if !lookup.is_empty() {
+                                if !lookup.answers().is_empty() {
                                     has_caa = true;
                                 }
                             }
@@ -491,7 +483,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         // 3. Check Fallback DNS resolver
                         if !has_caa {
                             if let Ok(lookup) = fallback_resolver.lookup(query.clone(), hickory_resolver::proto::rr::RecordType::CAA).await {
-                                if !lookup.is_empty() {
+                                if !lookup.answers().is_empty() {
                                     has_caa = true;
                                 }
                             }
@@ -520,7 +512,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             if let Some(account) = data.get(&clean_domain) {
                 println!("Checking configuration for domain: {}", clean_domain);
-                let fallback_resolver = TokioAsyncResolver::tokio(ResolverConfig::cloudflare(), ResolverOpts::default());
+                let fallback_resolver = build_resolver(ResolverConfig::from_parts(None, vec![], vec![create_name_server("1.1.1.1:53".parse().unwrap())]), ResolverOpts::default());
                 let custom_resolver = get_resolver(&ns);
 
                 let verified = check_cname_authoritative(&custom_resolver, &fallback_resolver, &clean_domain, &account.fulldomain).await;
@@ -542,7 +534,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             println!("Registered domains (checking CNAMEs):");
-            let fallback_resolver = TokioAsyncResolver::tokio(ResolverConfig::cloudflare(), ResolverOpts::default());
+            let fallback_resolver = build_resolver(ResolverConfig::from_parts(None, vec![], vec![create_name_server("1.1.1.1:53".parse().unwrap())]), ResolverOpts::default());
             let custom_resolver = get_resolver(&ns);
 
             for (domain, account) in data {
