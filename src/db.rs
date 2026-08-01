@@ -10,7 +10,27 @@ use sqlx_core::{
 };
 use uuid::Uuid;
 use crate::config::Config;
-use tracing::warn;
+use tracing::{warn, error};
+
+/// QUAL-WARN-1 fix: Macro para mapear uma row do BD para um Record.
+/// Elimina 6 blocos idênticos nos braços Sqlite/Postgres de cada função.
+/// Funciona em contexto de `impl DbPool` onde `Self::parse_allow_from` é acessível.
+macro_rules! map_record_row {
+    ($r:expr) => {{
+        let username: String = $r.get("Username");
+        let allow_from_raw: String = $r.get("AllowFrom");
+        let created_at: String = $r.try_get("CreatedAt").unwrap_or_default();
+        let has_updated: i64 = $r.try_get("HasUpdated").unwrap_or(0);
+        Record {
+            allow_from: Self::parse_allow_from(&allow_from_raw, &username),
+            password_hash: $r.get("Password"),
+            subdomain: $r.get("Subdomain"),
+            created_at,
+            has_updated: has_updated != 0,
+            username,
+        }
+    }};
+}
 
 #[derive(Debug, Clone)]
 pub struct Record {
@@ -70,9 +90,20 @@ impl DbPool {
         for stmt in cleaned.split(';') {
             let stmt = stmt.trim();
             if !stmt.is_empty() {
-                match self {
-                    Self::Sqlite(p) => { let _ = query(stmt).execute(p).await; }
-                    Self::Postgres(p) => { let _ = query(stmt).execute(p).await; }
+                // QUAL-WARN-2 fix: loga erros inesperados em vez de silenciar tudo.
+                // Erros de "já existe" (idempotência) são ignorados intencionalmente.
+                let result = match self {
+                    Self::Sqlite(p) => query(stmt).execute(p).await.map(|_| ()),
+                    Self::Postgres(p) => query(stmt).execute(p).await.map(|_| ()),
+                };
+                if let Err(e) = result {
+                    let msg = e.to_string();
+                    let is_idempotent = msg.contains("already exists")
+                        || msg.contains("duplicate column")
+                        || msg.contains("table already exists");
+                    if !is_idempotent {
+                        error!("Unexpected SQL migration error: {} | stmt: {}", e, &stmt[..stmt.len().min(80)]);
+                    }
                 }
             }
         }
@@ -183,40 +214,14 @@ impl DbPool {
                     .bind(username)
                     .fetch_optional(p)
                     .await?;
-                Ok(row.map(|r| {
-                    let u: String = r.get("Username");
-                    let allow_from_raw: String = r.get("AllowFrom");
-                    let created_at: String = r.try_get("CreatedAt").unwrap_or_default();
-                    let has_updated: i64 = r.try_get("HasUpdated").unwrap_or(0);
-                    Record {
-                        username: u.clone(),
-                        password_hash: r.get("Password"),
-                        subdomain: r.get("Subdomain"),
-                        allow_from: Self::parse_allow_from(&allow_from_raw, &u),
-                        created_at,
-                        has_updated: has_updated != 0,
-                    }
-                }))
+                Ok(row.map(|r| map_record_row!(r)))
             }
             Self::Postgres(p) => {
                 let row = query("SELECT Username, Password, Subdomain, AllowFrom, CAST(CreatedAt AS TEXT) as CreatedAt, HasUpdated FROM records WHERE Username = $1")
                     .bind(username)
                     .fetch_optional(p)
                     .await?;
-                Ok(row.map(|r| {
-                    let u: String = r.get("Username");
-                    let allow_from_raw: String = r.get("AllowFrom");
-                    let created_at: String = r.try_get("CreatedAt").unwrap_or_default();
-                    let has_updated: i64 = r.try_get("HasUpdated").unwrap_or(0);
-                    Record {
-                        username: u.clone(),
-                        password_hash: r.get("Password"),
-                        subdomain: r.get("Subdomain"),
-                        allow_from: Self::parse_allow_from(&allow_from_raw, &u),
-                        created_at,
-                        has_updated: has_updated != 0,
-                    }
-                }))
+                Ok(row.map(|r| map_record_row!(r)))
             }
         }
     }
@@ -228,40 +233,14 @@ impl DbPool {
                     .bind(subdomain)
                     .fetch_optional(p)
                     .await?;
-                Ok(row.map(|r| {
-                    let u: String = r.get("Username");
-                    let allow_from_raw: String = r.get("AllowFrom");
-                    let created_at: String = r.try_get("CreatedAt").unwrap_or_default();
-                    let has_updated: i64 = r.try_get("HasUpdated").unwrap_or(0);
-                    Record {
-                        username: u.clone(),
-                        password_hash: r.get("Password"),
-                        subdomain: r.get("Subdomain"),
-                        allow_from: Self::parse_allow_from(&allow_from_raw, &u),
-                        created_at,
-                        has_updated: has_updated != 0,
-                    }
-                }))
+                Ok(row.map(|r| map_record_row!(r)))
             }
             Self::Postgres(p) => {
                 let row = query("SELECT Username, Password, Subdomain, AllowFrom, CAST(CreatedAt AS TEXT) as CreatedAt, HasUpdated FROM records WHERE Subdomain = $1")
                     .bind(subdomain)
                     .fetch_optional(p)
                     .await?;
-                Ok(row.map(|r| {
-                    let u: String = r.get("Username");
-                    let allow_from_raw: String = r.get("AllowFrom");
-                    let created_at: String = r.try_get("CreatedAt").unwrap_or_default();
-                    let has_updated: i64 = r.try_get("HasUpdated").unwrap_or(0);
-                    Record {
-                        username: u.clone(),
-                        password_hash: r.get("Password"),
-                        subdomain: r.get("Subdomain"),
-                        allow_from: Self::parse_allow_from(&allow_from_raw, &u),
-                        created_at,
-                        has_updated: has_updated != 0,
-                    }
-                }))
+                Ok(row.map(|r| map_record_row!(r)))
             }
         }
     }
@@ -272,39 +251,13 @@ impl DbPool {
                 let rows = query("SELECT Username, Password, Subdomain, AllowFrom, CAST(CreatedAt AS TEXT) as CreatedAt, HasUpdated FROM records")
                     .fetch_all(p)
                     .await?;
-                Ok(rows.into_iter().map(|r| {
-                    let u: String = r.get("Username");
-                    let allow_from_raw: String = r.get("AllowFrom");
-                    let created_at: String = r.try_get("CreatedAt").unwrap_or_default();
-                    let has_updated: i64 = r.try_get("HasUpdated").unwrap_or(0);
-                    Record {
-                        username: u.clone(),
-                        password_hash: r.get("Password"),
-                        subdomain: r.get("Subdomain"),
-                        allow_from: Self::parse_allow_from(&allow_from_raw, &u),
-                        created_at,
-                        has_updated: has_updated != 0,
-                    }
-                }).collect())
+                Ok(rows.into_iter().map(|r| map_record_row!(r)).collect())
             }
             Self::Postgres(p) => {
                 let rows = query("SELECT Username, Password, Subdomain, AllowFrom, CAST(CreatedAt AS TEXT) as CreatedAt, HasUpdated FROM records")
                     .fetch_all(p)
                     .await?;
-                Ok(rows.into_iter().map(|r| {
-                    let u: String = r.get("Username");
-                    let allow_from_raw: String = r.get("AllowFrom");
-                    let created_at: String = r.try_get("CreatedAt").unwrap_or_default();
-                    let has_updated: i64 = r.try_get("HasUpdated").unwrap_or(0);
-                    Record {
-                        username: u.clone(),
-                        password_hash: r.get("Password"),
-                        subdomain: r.get("Subdomain"),
-                        allow_from: Self::parse_allow_from(&allow_from_raw, &u),
-                        created_at,
-                        has_updated: has_updated != 0,
-                    }
-                }).collect())
+                Ok(rows.into_iter().map(|r| map_record_row!(r)).collect())
             }
         }
     }
@@ -367,5 +320,156 @@ impl DbPool {
                 Ok(rows.into_iter().map(|r| r.get::<String, _>("Value")).collect())
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{Config, General, Database, Api, LogConfig};
+
+    fn make_sqlite_config() -> Config {
+        Config {
+            general: General {
+                listen: "0.0.0.0:53".to_string(),
+                proto: "udp".to_string(),
+                domain: "auth.example.com".to_string(),
+                nsname: "ns1.example.com".to_string(),
+                nsadmin: "admin.example.com".to_string(),
+                debug: false,
+                static_records: vec![],
+            },
+            database: Database {
+                engine: "sqlite".to_string(),
+                connection: ":memory:".to_string(),
+            },
+            api: Api {
+                api_domain: None,
+                ip: "127.0.0.1".to_string(),
+                disable_registration: false,
+                autocert_port: None,
+                port: "443".to_string(),
+                tls: "none".to_string(),
+                tls_cert_privkey: None,
+                tls_cert_fullchain: None,
+                acme_cache_dir: None,
+                notification_email: None,
+                corsorigins: vec!["*".to_string()],
+                use_header: false,
+                header_name: "X-Forwarded-For".to_string(),
+                hsts_enabled: false,
+                hsts_max_age: None,
+                hsts_include_subdomains: false,
+                hsts_preload: false,
+                trusted_proxies: vec![],
+                register_rate_limit_per_min: 0,
+                cleanup_orphans: false,
+                orphan_timeout_mins: 30,
+            },
+            logconfig: LogConfig { loglevel: "info".to_string() },
+        }
+    }
+
+    #[tokio::test]
+    async fn test_register_and_get_user() {
+        let config = make_sqlite_config();
+        let db = DbPool::new(&config).await.expect("DB init failed");
+        let (username, password, subdomain) = db.register(vec![]).await.expect("register failed");
+        let record = db.get_user_by_username(&username.to_string()).await
+            .expect("query failed")
+            .expect("user not found");
+        assert_eq!(record.username, username.to_string());
+        assert_eq!(record.subdomain, subdomain);
+        assert!(!password.is_empty());
+        assert!(!record.password_hash.is_empty());
+        assert_eq!(record.allow_from, Vec::<String>::new());
+        assert!(!record.has_updated);
+    }
+
+    #[tokio::test]
+    async fn test_register_with_allowfrom() {
+        let config = make_sqlite_config();
+        let db = DbPool::new(&config).await.expect("DB init failed");
+        let cidrs = vec!["192.168.1.0/24".to_string(), "10.0.0.0/8".to_string()];
+        let (username, _, _) = db.register(cidrs.clone()).await.expect("register failed");
+        let record = db.get_user_by_username(&username.to_string()).await
+            .expect("query failed")
+            .expect("user not found");
+        assert_eq!(record.allow_from, cidrs);
+    }
+
+    #[tokio::test]
+    async fn test_update_txt_and_get() {
+        let config = make_sqlite_config();
+        let db = DbPool::new(&config).await.expect("DB init failed");
+        let (_, _, subdomain) = db.register(vec![]).await.expect("register failed");
+        db.update_txt(&subdomain, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1").await.expect("update failed");
+        let values = db.get_txt_for_domain(&subdomain).await.expect("get_txt failed");
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0], "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1");
+    }
+
+    #[tokio::test]
+    async fn test_update_txt_keeps_max_2() {
+        let config = make_sqlite_config();
+        let db = DbPool::new(&config).await.expect("DB init failed");
+        let (_, _, subdomain) = db.register(vec![]).await.expect("register failed");
+        db.update_txt(&subdomain, "TOKEN_1_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA").await.unwrap();
+        db.update_txt(&subdomain, "TOKEN_2_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA").await.unwrap();
+        db.update_txt(&subdomain, "TOKEN_3_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA").await.unwrap();
+        let values = db.get_txt_for_domain(&subdomain).await.expect("get_txt failed");
+        assert_eq!(values.len(), 2, "deve manter no máximo 2 TXT records");
+        assert!(values.iter().all(|v| v.starts_with("TOKEN_")));
+        assert!(!values.iter().any(|v| v.contains("TOKEN_1")), "TOKEN_1 deve ter sido removido");
+    }
+
+    #[tokio::test]
+    async fn test_delete_user() {
+        let config = make_sqlite_config();
+        let db = DbPool::new(&config).await.expect("DB init failed");
+        let (username, _, _) = db.register(vec![]).await.expect("register failed");
+        let deleted = db.delete_user(&username.to_string()).await.expect("delete failed");
+        assert!(deleted);
+        let record = db.get_user_by_username(&username.to_string()).await.expect("query failed");
+        assert!(record.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_delete_nonexistent_user() {
+        let config = make_sqlite_config();
+        let db = DbPool::new(&config).await.expect("DB init failed");
+        let deleted = db.delete_user("nonexistent-user").await.expect("delete failed");
+        assert!(!deleted);
+    }
+
+    #[tokio::test]
+    async fn test_admin_password() {
+        let config = make_sqlite_config();
+        let db = DbPool::new(&config).await.expect("DB init failed");
+        let hash = bcrypt::hash("test_password_123", 4).unwrap();
+        db.set_admin_password(&hash).await.expect("set_admin failed");
+        let stored = db.get_admin_password_hash().await.expect("get failed").expect("no hash");
+        assert_eq!(stored, hash);
+    }
+
+    #[tokio::test]
+    async fn test_list_users() {
+        let config = make_sqlite_config();
+        let db = DbPool::new(&config).await.expect("DB init failed");
+        db.register(vec![]).await.unwrap();
+        db.register(vec![]).await.unwrap();
+        let users = db.list_users().await.expect("list failed");
+        assert_eq!(users.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_get_user_by_subdomain() {
+        let config = make_sqlite_config();
+        let db = DbPool::new(&config).await.expect("DB init failed");
+        let (_, _, subdomain) = db.register(vec![]).await.expect("register failed");
+        let record = db.get_user_by_subdomain(&subdomain).await
+            .expect("query failed")
+            .expect("not found");
+        assert_eq!(record.subdomain, subdomain);
     }
 }

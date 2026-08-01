@@ -7,13 +7,16 @@ use std::io::{self, Write};
 use std::time::Duration;
 use hickory_resolver::TokioResolver;
 use hickory_resolver::config::{ResolverConfig, ResolverOpts};
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
+use tokio::io::AsyncBufReadExt;
 
 const DEFAULT_STORAGE: &str = "/etc/acmedns/clientstorage.json";
 
 fn build_resolver(config: ResolverConfig, opts: ResolverOpts) -> TokioResolver {
     let mut builder = TokioResolver::builder_with_config(config, Default::default());
     *builder.options_mut() = opts;
-    builder.build().unwrap()
+    builder.build().expect("Failed to build DNS resolver: invalid configuration")
 }
 
 #[derive(Debug, Parser)]
@@ -122,6 +125,16 @@ impl Storage {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
         }
+        // SEG-WARN-2 fix: permissões restritas (0o600) para proteger credentials
+        // (username + password) armazenadas no arquivo de storage.
+        #[cfg(unix)]
+        let file = {
+            std::fs::OpenOptions::new()
+                .write(true).create(true).truncate(true)
+                .mode(0o600)
+                .open(&self.path)?
+        };
+        #[cfg(not(unix))]
         let file = File::create(&self.path)?;
         serde_json::to_writer_pretty(file, data)?;
         Ok(())
@@ -348,7 +361,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 fulldomain: response.fulldomain.clone(),
                 subdomain: response.subdomain,
                 allow: allow_from,
-                server_url: server_url,
+                server_url,
             };
 
             data.insert(clean_domain.clone(), account.clone());
@@ -393,7 +406,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut input = String::new();
                 let mut monitor = true;
                 let mut reader = tokio::io::BufReader::new(tokio::io::stdin());
-                use tokio::io::AsyncBufReadExt;
                 if reader.read_line(&mut input).await.is_ok() {
                     let input = input.trim().to_lowercase();
                     if input == "n" {
@@ -430,7 +442,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut caa_input = String::new();
             let mut monitor_caa = false;
             let mut reader = tokio::io::BufReader::new(tokio::io::stdin());
-            use tokio::io::AsyncBufReadExt;
             if reader.read_line(&mut caa_input).await.is_ok() {
                 let val = caa_input.trim().to_lowercase();
                 if val == "y" {

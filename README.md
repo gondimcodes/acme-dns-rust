@@ -16,12 +16,14 @@ acme-dns-rust/
 ├── LICENSE                     # GNU General Public License v3
 ├── README.md                   # Project administration & structural documentation
 ├── INSTALL.md                  # Installation & compilation guide (Server and Client)
+├── CHANGELOG.md                # Version history and release notes
 ├── acme-dns-client-rust/       # Sub-crate containing the Let's Encrypt Certbot client hook
 │   ├── Cargo.toml
 │   └── src/
 │       └── main.rs             # Client source code
 └── src/                        # Server source code
     ├── main.rs                 # Server CLI entrypoint & spawner
+    ├── cli.rs                  # CLI command definitions (clap derive)
     ├── config.rs               # TOML Configuration file parser
     ├── auth.rs                 # Hashing (bcrypt) & authentication logic
     ├── db.rs                   # Database abstraction layer (SQLite & Postgres)
@@ -35,12 +37,13 @@ acme-dns-rust/
 
 ### 1. acme-dns-rust (The Server)
 
-* **`src/main.rs`**: Entrypoint of the server binary. It handles CLI parsing (admin commands), initializes logging, configures the SQLite/PostgreSQL connection pool, and spawns the DNS UDP/TCP service and HTTP/HTTPS Axum web endpoints.
+* **`src/main.rs`**: Entrypoint of the server binary. Handles CLI parsing (admin commands), initializes logging, configures the SQLite/PostgreSQL connection pool, and spawns the DNS UDP/TCP service and HTTP/HTTPS Axum web endpoints. Includes graceful SIGTERM/SIGINT shutdown.
+* **`src/cli.rs`**: Declarative CLI command definitions using `clap` derive — `users list`, `users delete`, `users txt`, `users passwd`.
 * **`src/config.rs`**: Parses TOML configurations into runtime memory structures.
-* **`src/auth.rs`**: Security and hashing helper (generates random credentials and runs bcrypt checks).
-* **`src/db.rs`**: Handles SQLite/PostgreSQL operations (registering users, managing dynamic TXT tokens, user deletion).
-* **`src/dns.rs`**: Extends Hickory DNS to serve dynamic challenge TXT records directly from the database, handling fallback mapping to static zones.
-* **`src/api.rs`**: Exposes Axum endpoints (`/register`, `/update`, `/health`), validates source IPs against allowed CIDRs, and drives Let's Encrypt TLS-ALPN-01 dynamic certificates generation.
+* **`src/auth.rs`**: Security and hashing helper (generates random credentials, runs bcrypt checks, timing equalization against enumeration attacks).
+* **`src/db.rs`**: Handles SQLite/PostgreSQL operations (registering users, managing dynamic TXT tokens, user deletion) via a unified `DbPool` enum. Uses `map_record_row!` macro to avoid code duplication across database backends.
+* **`src/dns.rs`**: Extends Hickory DNS to serve dynamic challenge TXT records directly from the database, with a 2-second in-memory cache (`moka`), and static zone fallback.
+* **`src/api.rs`**: Exposes Axum endpoints (`/register`, `/update`, `/health`, `/metrics`), validates source IPs against allowed CIDRs, drives Let's Encrypt TLS-ALPN-01 dynamic certificates. CORS policy respects `corsorigins` configuration. Rate limiter cleanup runs as a background task.
 
 ---
 

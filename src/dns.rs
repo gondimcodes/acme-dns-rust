@@ -40,7 +40,10 @@ impl AcmeDnsHandler {
             .map_err(|e| format!("Invalid domain '{}': {}", domain_str, e))?;
 
         let serial = chrono::Utc::now().format("%Y%m%d%H").to_string();
-        let serial_u32: u32 = serial.parse().unwrap_or(1);
+        let serial_u32: u32 = serial.parse().unwrap_or_else(|e| {
+            tracing::warn!("SOA serial '{}' overflows u32 ({}), falling back to 1 — DNS propagation may be affected", serial, e);
+            1
+        });
 
         let nsname = config.general.nsname.clone();
         let nsadmin = config.general.nsadmin.clone();

@@ -1,6 +1,33 @@
 # Changelog — acme-dns-rust
 
-## [1.2.1] — 2026-07-15
+## [1.2.3] / acme-dns-client-rust [1.0.3] — 2026-08-01
+
+This release is a comprehensive code quality, security hardening, and test coverage improvement based on a full technical audit (SSDLC/OWASP/CWE review) of both projects. No breaking changes.
+
+### 🔒 Security
+- **CORS now respects `corsorigins` config** (`api.rs`): Previously the CORS layer always used `allow_origin(Any)` (wildcard), ignoring the operator's `corsorigins` setting. The CORS policy is now built from `config.toml` — only allows `*` when explicitly declared, otherwise restricts to the listed origins. (CWE-346)
+- **Storage file permissions `0o600`** (`acme-dns-client-rust`): The credentials storage JSON (`/etc/acmedns/clientstorage.json`) is now created with mode `0o600`, preventing other system users from reading stored API usernames and passwords. (CWE-732)
+
+### ⚡ Performance & Architecture
+- **Rate limiter cleanup moved to background task** (`api.rs`): The `O(n)` `retain()` call that ran on every HTTP request to purge stale IP entries from the `DashMap` has been moved to a dedicated `tokio::spawn` background task that runs every 60 seconds. This eliminates CPU spikes during DDoS scenarios with a large number of unique IPs.
+- **`REGISTER_LIMITER` moved from `static OnceLock` to `AppState`** (`api.rs`): The per-IP registration rate limiter was stored as a process-global `static OnceLock<DashMap>`, which is not testable in isolation and architecturally inconsistent with the rest of the state model. It is now a proper `Arc<DashMap>` field in `AppState`.
+- **Background task consolidates both rate limiter cleanups**: A single periodic task in `create_router()` handles cleanup for both the general request rate limiter and the registration rate limiter.
+
+### 🏗️ Code Quality
+- **Eliminated 6-fold code duplication in `db.rs`** (`QUAL-WARN-1`): Introduced a `map_record_row!` macro that maps a database `Row` to a `Record`. This removes 6 identical blocks spread across `get_user_by_username`, `get_user_by_subdomain`, and `list_users` (each with SQLite and Postgres arms).
+- **SQL migration errors are now logged** (`db.rs`): `execute_sql` no longer silently discards all errors with `let _ =`. Errors that are not idempotent (i.e., not "already exists" / "duplicate column") are now logged at `error!()` level, making unexpected migration failures visible in production logs.
+- **`warn!()` for SOA serial overflow** (`dns.rs`): If the UTC timestamp-based SOA serial ever overflows `u32::MAX` (expected to occur after ~2042), the fallback to `1` now logs a `warn!()` message instead of silently resetting the serial (which would break DNS propagation).
+- **`expect()` replaces `unwrap()` in client** (`acme-dns-client-rust`): The `build_resolver()` function no longer panics with an opaque message — it now produces a clear diagnostic via `expect("Failed to build DNS resolver: invalid configuration")`.
+- **Duplicate `use` import removed** (`acme-dns-client-rust`): `use tokio::io::AsyncBufReadExt` was imported twice inside the same `match` arm. Moved to the top-level import list.
+- **Redundant field name fixed** (`acme-dns-client-rust`): `server_url: server_url` corrected to `server_url` (clippy `redundant_field_names`).
+
+### 🧪 Tests
+- **9 new integration tests for `db.rs`** using SQLite `:memory:` — covering `register`, `allow_from`, `update_txt`, max 2 TXT records enforcement, `delete_user`, non-existent delete, `list_users`, `get_user_by_subdomain`, and admin password operations.
+- Total test count: **20 tests** (up from 10).
+
+---
+
+
 
 This release fixes a critical bug in the orphan account cleanup routine and improves the test suite stability.
 

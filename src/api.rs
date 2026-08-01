@@ -14,7 +14,7 @@ use ipnetwork::IpNetwork;
 use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, Instant};
 use dashmap::DashMap;
-use tower_http::cors::{CorsLayer, Any};
+use tower_http::cors::{AllowOrigin, CorsLayer, Any};
 use metrics::{counter, gauge};
 use metrics_exporter_prometheus::PrometheusHandle;
 
@@ -24,6 +24,9 @@ pub struct AppState {
     pub config: Arc<Config>, // PERF-02: Arc<Config> avoids deep clones
     pub metrics_handle: Arc<PrometheusHandle>,
     pub txt_cache: Arc<moka::future::Cache<String, Vec<String>>>,
+    /// ARQ-WARN-1 fix: register_limiter movido do static OnceLock para AppState
+    /// para ser testável e arquiteturalmente consistente.
+    pub register_limiter: Arc<DashMap<IpAddr, Instant>>,
 }
 
 #[derive(Serialize)]
@@ -123,9 +126,8 @@ async fn rate_limiting_middleware(
         .unwrap_or(IpAddr::from([0, 0, 0, 0]));
 
     let now = Instant::now();
-    // SEG-09: clean stale entries (>5 min without activity) to prevent memory leak
-    let stale_threshold = Duration::from_secs(300);
-    limiter.general.retain(|_, state| now.duration_since(state.last_update) < stale_threshold);
+    // PERF-WARN-1 fix: cleanup de entradas stale movido para background task em create_router.
+    // O retain() O(n) foi removido daqui para evitar degradação sob DDoS de IPs distribuídos.
 
     let mut entry = limiter.general.entry(ip).or_insert_with(|| RateLimitState {
         tokens: 5.0,
@@ -149,10 +151,35 @@ pub fn create_router(state: AppState) -> Router {
     let limiter = IpRateLimiter::new();
     let config_for_rate = Arc::clone(&state.config);
 
-    // SEG-11: build CORS layer from corsorigins config
-    // Using Any (wildcard) since corsorigins = ["*"] — no credentials mode
+    // PERF-WARN-1 + ARQ-WARN-1 fix: cleanup de stale entries em task periódica background.
+    // Evita o O(n) retain() por request sob DDoS de IPs distribuídos.
+    let general_map = Arc::clone(&limiter.general);
+    let register_limiter_cleanup = Arc::clone(&state.register_limiter);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            let now = Instant::now();
+            general_map.retain(|_, s| now.duration_since(s.last_update) < Duration::from_secs(300));
+            register_limiter_cleanup.retain(|_, t| now.duration_since(*t) < Duration::from_secs(300));
+        }
+    });
+
+    // SEG-WARN-1 fix: CORS agora respeita corsorigins do config.
+    // Se vazio ou contém "*", usa wildcard. Caso contrário, restringe às origens declaradas.
+    let allow_origin: AllowOrigin = if state.config.api.corsorigins.is_empty()
+        || state.config.api.corsorigins.iter().any(|o| o == "*")
+    {
+        AllowOrigin::any()
+    } else {
+        let origins: Vec<HeaderValue> = state.config.api.corsorigins.iter()
+            .filter_map(|o| o.parse::<HeaderValue>().ok())
+            .collect();
+        AllowOrigin::list(origins)
+    };
+
     let cors = CorsLayer::new()
-        .allow_origin(Any)
+        .allow_origin(allow_origin)
         .allow_methods([Method::GET, Method::POST])
         .allow_headers(Any);
 
@@ -226,15 +253,8 @@ async fn register(
     let ip = extract_client_ip(&request, &state.config)
         .unwrap_or(IpAddr::from([0, 0, 0, 0]));
 
-    // We need to extract the limiter from extensions — passed via router state
-    // Simple approach: use a per-request DashMap check via AppState field
-    // For now, track last registration time per IP in a thread-local DashMap
-    // (the IpRateLimiter is owned by the route_layer middleware; we use a separate static here)
+    // ARQ-WARN-1 fix: usa state.register_limiter em vez de OnceLock estático global.
     {
-        use std::sync::OnceLock;
-        static REGISTER_LIMITER: OnceLock<DashMap<IpAddr, Instant>> = OnceLock::new();
-        let limiter = REGISTER_LIMITER.get_or_init(DashMap::new);
-
         let now = Instant::now();
         let rate_limit_secs = if state.config.api.register_rate_limit_per_min > 0 {
             60 / state.config.api.register_rate_limit_per_min as u64
@@ -243,14 +263,13 @@ async fn register(
         };
 
         if rate_limit_secs > 0 {
-            if let Some(last) = limiter.get(&ip) {
+            if let Some(last) = state.register_limiter.get(&ip) {
                 if now.duration_since(*last) < Duration::from_secs(rate_limit_secs) {
                     return StatusCode::TOO_MANY_REQUESTS.into_response();
                 }
             }
-            limiter.insert(ip, now);
-            // Clean stale entries
-            limiter.retain(|_, t| now.duration_since(*t) < Duration::from_secs(300));
+            state.register_limiter.insert(ip, now);
+            // Limpeza periódica tratada pelo background task em create_router.
         }
     }
 

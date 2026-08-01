@@ -128,6 +128,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config: Arc::clone(&config),
         metrics_handle: Arc::clone(&metrics_handle),
         txt_cache: Arc::clone(&dns_handler.txt_cache),
+        register_limiter: Arc::new(dashmap::DashMap::new()),
     };
     let api_router = create_router(state);
 
