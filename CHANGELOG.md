@@ -1,5 +1,19 @@
 # Changelog — acme-dns-rust
 
+## [1.2.4] — 2026-08-27
+
+This release introduces concurrency hardening and protection against race conditions under parallel loads.
+
+### 🔒 Security & Concurrency
+- **Atomic Self-Pruning in `update_txt` (`db.rs`)**: Replaced non-atomic `SELECT COUNT(*)` / check-then-delete logic with an atomic window self-pruning query (`DELETE ... NOT IN (SELECT ... ORDER BY LastUpdate DESC LIMIT 2)`). Eliminates TOCTOU race conditions (CWE-367) when multiple validation requests for the same subdomain execute concurrently.
+- **SQLite Concurrency Hardening (`db.rs`)**: Configured SQLite connections with WAL journal mode (`SqliteJournalMode::Wal`) and a 10-second `busy_timeout` to ensure non-blocking concurrent reads and resilient serialized writes under burst workloads.
+- **Atomic Register Rate Limiter (`api.rs`)**: Switched the `/register` IP rate limiter from a check-then-insert pattern to atomic mutation via `DashMap`'s Entry API (`Entry::Occupied` / `Entry::Vacant`), preventing rate limit bypasses from parallel bursts (CWE-362).
+
+### 🧪 Tests
+- **Concurrent Update Test (`db.rs`)**: Added `test_update_txt_concurrent_keeps_max_2` to verify that concurrent asynchronous TXT record updates strictly enforce the maximum limit of 2 records without deadlocks or state corruption.
+
+---
+
 ## [1.2.3] / acme-dns-client-rust [1.0.3] — 2026-08-01
 
 This release is a comprehensive code quality, security hardening, and test coverage improvement based on a full technical audit (SSDLC/OWASP/CWE review) of both projects. No breaking changes.

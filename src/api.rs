@@ -254,6 +254,7 @@ async fn register(
         .unwrap_or(IpAddr::from([0, 0, 0, 0]));
 
     // ARQ-WARN-1 fix: usa state.register_limiter em vez de OnceLock estático global.
+    // Atomização via Entry API para mitigar race condition em requisições paralelas simultâneas.
     {
         let now = Instant::now();
         let rate_limit_secs = if state.config.api.register_rate_limit_per_min > 0 {
@@ -263,12 +264,19 @@ async fn register(
         };
 
         if rate_limit_secs > 0 {
-            if let Some(last) = state.register_limiter.get(&ip) {
-                if now.duration_since(*last) < Duration::from_secs(rate_limit_secs) {
-                    return StatusCode::TOO_MANY_REQUESTS.into_response();
+            use dashmap::mapref::entry::Entry;
+            match state.register_limiter.entry(ip) {
+                Entry::Occupied(mut occ) => {
+                    let last = *occ.get();
+                    if now.duration_since(last) < Duration::from_secs(rate_limit_secs) {
+                        return StatusCode::TOO_MANY_REQUESTS.into_response();
+                    }
+                    occ.insert(now);
+                }
+                Entry::Vacant(vac) => {
+                    vac.insert(now);
                 }
             }
-            state.register_limiter.insert(ip, now);
             // Limpeza periódica tratada pelo background task em create_router.
         }
     }

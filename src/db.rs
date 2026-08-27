@@ -6,7 +6,6 @@ use sqlx_core::{
     row::Row,
     error::Error as SqlxError,
     query::query,
-    query_scalar::query_scalar,
 };
 use uuid::Uuid;
 use crate::config::Config;
@@ -59,6 +58,9 @@ impl DbPool {
                 Self::Postgres(pool)
             }
             _ => {
+                use sqlx_sqlite::{SqliteConnectOptions, SqliteJournalMode};
+                use std::str::FromStr;
+
                 let conn = &config.database.connection;
                 let connection_str = if conn == ":memory:" {
                     "sqlite::memory:?cache=shared".to_string()
@@ -68,9 +70,13 @@ impl DbPool {
                     format!("sqlite://{}", conn)
                 };
 
+                let connect_opts = SqliteConnectOptions::from_str(&connection_str)?
+                    .journal_mode(SqliteJournalMode::Wal)
+                    .busy_timeout(std::time::Duration::from_secs(10));
+
                 let pool = SqlitePoolOptions::new()
                     .max_connections(5)
-                    .connect(&connection_str)
+                    .connect_with(connect_opts)
                     .await?;
                 Self::Sqlite(pool)
             }
@@ -287,22 +293,35 @@ impl DbPool {
     pub async fn update_txt(&self, subdomain: &str, txt: &str) -> Result<(), SqlxError> {
         match self {
             Self::Sqlite(p) => {
-                let count: i64 = query_scalar("SELECT COUNT(*) FROM txt WHERE Subdomain = ?").bind(subdomain).fetch_one(p).await?;
-                if count >= 2 {
-                    query("DELETE FROM txt WHERE Subdomain = ? AND rowid = (SELECT MIN(rowid) FROM txt WHERE Subdomain = ?)")
-                        .bind(subdomain).bind(subdomain).execute(p).await?;
-                }
-                query("INSERT INTO txt (Subdomain, Value, LastUpdate) VALUES (?, ?, CURRENT_TIMESTAMP)").bind(subdomain).bind(txt).execute(p).await?;
-                query("UPDATE records SET HasUpdated = 1 WHERE Subdomain = ?").bind(subdomain).execute(p).await?;
+                query("INSERT INTO txt (Subdomain, Value, LastUpdate) VALUES (?, ?, CURRENT_TIMESTAMP)")
+                    .bind(subdomain)
+                    .bind(txt)
+                    .execute(p)
+                    .await?;
+                query("DELETE FROM txt WHERE Subdomain = ? AND rowid NOT IN (SELECT rowid FROM txt WHERE Subdomain = ? ORDER BY LastUpdate DESC, rowid DESC LIMIT 2)")
+                    .bind(subdomain)
+                    .bind(subdomain)
+                    .execute(p)
+                    .await?;
+                query("UPDATE records SET HasUpdated = 1 WHERE Subdomain = ?")
+                    .bind(subdomain)
+                    .execute(p)
+                    .await?;
             }
             Self::Postgres(p) => {
-                let count: i64 = query_scalar("SELECT COUNT(*) FROM txt WHERE Subdomain = $1").bind(subdomain).fetch_one(p).await?;
-                if count >= 2 {
-                    query("DELETE FROM txt WHERE Subdomain = $1 AND ctid IN (SELECT ctid FROM txt WHERE Subdomain = $1 ORDER BY LastUpdate ASC LIMIT 1)")
-                        .bind(subdomain).execute(p).await?;
-                }
-                query("INSERT INTO txt (Subdomain, Value, LastUpdate) VALUES ($1, $2, CURRENT_TIMESTAMP)").bind(subdomain).bind(txt).execute(p).await?;
-                query("UPDATE records SET HasUpdated = 1 WHERE Subdomain = $1").bind(subdomain).execute(p).await?;
+                query("INSERT INTO txt (Subdomain, Value, LastUpdate) VALUES ($1, $2, CURRENT_TIMESTAMP)")
+                    .bind(subdomain)
+                    .bind(txt)
+                    .execute(p)
+                    .await?;
+                query("DELETE FROM txt WHERE Subdomain = $1 AND ctid NOT IN (SELECT ctid FROM txt WHERE Subdomain = $1 ORDER BY LastUpdate DESC, ctid DESC LIMIT 2)")
+                    .bind(subdomain)
+                    .execute(p)
+                    .await?;
+                query("UPDATE records SET HasUpdated = 1 WHERE Subdomain = $1")
+                    .bind(subdomain)
+                    .execute(p)
+                    .await?;
             }
         }
 
@@ -471,5 +490,31 @@ mod tests {
             .expect("query failed")
             .expect("not found");
         assert_eq!(record.subdomain, subdomain);
+    }
+
+    #[tokio::test]
+    async fn test_update_txt_concurrent_keeps_max_2() {
+        let config = make_sqlite_config();
+        let db = std::sync::Arc::new(DbPool::new(&config).await.expect("DB init failed"));
+        let (_, _, subdomain) = db.register(vec![]).await.expect("register failed");
+
+        // Dispara 20 updates concorrentes simultâneos
+        let mut handles = Vec::new();
+        for i in 0..20 {
+            let db_clone = std::sync::Arc::clone(&db);
+            let sub_clone = subdomain.clone();
+            handles.push(tokio::spawn(async move {
+                let token = format!("CONCURRENT_TOKEN_{:02}_AAAAAAAAAAAAAAAAAAAAAAAAA", i);
+                db_clone.update_txt(&sub_clone, &token).await
+            }));
+        }
+
+        for h in handles {
+            let res = h.await.unwrap();
+            assert!(res.is_ok(), "Update concorrente falhou: {:?}", res);
+        }
+
+        let values = db.get_txt_for_domain(&subdomain).await.expect("get_txt failed");
+        assert_eq!(values.len(), 2, "Mesmo com 20 updates concorrentes, deve manter estritamente 2 TXTs");
     }
 }
