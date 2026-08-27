@@ -1,6 +1,6 @@
 # Technology Stack & Architecture — acme-dns-rust
 
-This document provides a comprehensive overview of the technology stack, external crates, database integration, DNS server engine, security features, and CI/CD pipelines powering **acme-dns-rust** (v1.2.3).
+This document provides a comprehensive overview of the technology stack, external crates, database integration, DNS server engine, security features, and CI/CD pipelines powering **acme-dns-rust** (v1.2.4).
 
 ---
 
